@@ -15,6 +15,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NotificationStore _notificationStore = new();
     private readonly ReminderEvaluator _reminderEvaluator = new();
     private readonly PersistentNotificationForm _notificationForm = new();
+    private readonly ScheduleDetailsForm _detailsForm = new();
     private readonly NotifyIcon _notifyIcon;
     private readonly TaskbarToolbarForm _toolbar;
     private readonly ContextMenuStrip _menu;
@@ -41,6 +42,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private IReadOnlyList<IssueItem> _lastIssues = [];
     private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
     private UpdateRelease? _availableUpdate;
+    private HoverCardContent? _detailsContent;
 
     public TrayApplicationContext()
     {
@@ -77,7 +79,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         UpdateIcon(null, TrayIconState.Loading);
 
         _toolbar = new TaskbarToolbarForm(_menu, avoidProcessName: "UsageTray");
-        _toolbar.RefreshRequested += async (_, _) => await RefreshAsync(showSuccess: false);
+        _toolbar.DetailsRequested += (_, _) => ToggleDetails();
         _toolbar.SettingsRequested += (_, _) => ShowSettings();
         _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
         _notificationForm.AcknowledgeRequested += (_, notificationId) =>
@@ -94,7 +96,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             HoverCardContent.CreateStatus("待配置", "请配置任务地址与登录信息。",
                 Color.FromArgb(124, 132, 145)),
             Color.FromArgb(124, 132, 145));
-        _toolbar.SetHoverEnabled(_settings.IsConfigured);
+        _toolbar.SetHoverEnabled(false);
         _toolbar.Show();
         _notifyIcon.Visible = !_toolbar.IsAttached;
 
@@ -124,14 +126,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _refreshing = true;
         _refreshItem.Enabled = false;
-        _toolbar.SetHoverEnabled(true);
         try
         {
-            _toolbar.SetDisplay("刷新中…",
-                HoverCardContent.CreateStatus("刷新中…", "正在读取我的任务与 Bug。",
-                    Color.FromArgb(69, 139, 226)),
-                Color.FromArgb(69, 139, 226));
-            UpdateIcon(null, TrayIconState.Loading);
             var issues = await _client.GetIssuesAsync(_settings);
             ApplyIssues(issues);
             NotifyChanges(issues);
@@ -144,7 +140,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
-            ApplyError(exception.Message);
+            ApplyRefreshError(exception.Message);
         }
         finally
         {
@@ -175,8 +171,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             display += $" · 逾{developmentOverdue}";
         }
 
-        _toolbar.SetDisplay(display,
-            HoverCardContent.CreateSchedule(summary, today, DateTime.Now, color), color);
+        _detailsContent = HoverCardContent.CreateSchedule(summary, today, DateTime.Now, color);
+        _toolbar.SetDisplay(display, _detailsContent, color);
+        _detailsForm.SetContent(_detailsContent);
         SetTooltip($"TaskReminderTray - {display}");
         UpdateIcon(summary.TotalCount,
             developmentOverdue > 0 || summary.DueSoonCount > 0
@@ -209,21 +206,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void ApplyError(string message)
+    private void ApplyRefreshError(string message)
     {
-        _summaryItem.Text = "读取失败";
         _updatedItem.Text = $"最后尝试：{DateTime.Now:yyyy-MM-dd HH:mm:ss}";
-        _toolbar.SetDisplay("读取失败",
-            HoverCardContent.CreateStatus("读取失败", message,
-                Color.FromArgb(211, 66, 76), $"最后尝试 {DateTime.Now:HH:mm:ss}"),
-            Color.FromArgb(211, 66, 76));
-        UpdateIcon(null, TrayIconState.Error);
-        SetTooltip("TaskReminderTray - 读取失败");
+        if (_lastIssues.Count == 0)
+        {
+            _summaryItem.Text = "读取失败";
+            SetTooltip("TaskReminderTray - 读取失败");
+            UpdateIcon(null, TrayIconState.Error);
+        }
         if (!string.Equals(_lastError, message, StringComparison.Ordinal))
         {
             _lastError = message;
             ShowBalloon("任务读取失败", message, ToolTipIcon.Error);
         }
+    }
+
+    private void ToggleDetails()
+    {
+        if (!_settings.IsConfigured || _detailsContent is null)
+        {
+            return;
+        }
+
+        _detailsForm.Toggle(_toolbar.GetScreenBounds());
     }
 
     private void AcknowledgeNotification(string notificationId)
@@ -464,6 +470,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dismissController.Dispose();
         _notificationForm.Shutdown();
         _notificationForm.Dispose();
+        _detailsForm.Shutdown();
+        _detailsForm.Dispose();
         _toolbar.Close();
         _toolbar.Dispose();
         _notifyIcon.Visible = false;

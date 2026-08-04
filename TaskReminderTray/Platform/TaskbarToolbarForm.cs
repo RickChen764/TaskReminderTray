@@ -49,10 +49,10 @@ internal sealed class TaskbarToolbarForm : Form
     private bool _toolTipPositionArmed;
     private bool _hovered;
     private bool _pressed;
-    private bool _hoverEnabled = true;
+    private bool _hoverEnabled;
     private Bitmap? _toolTipFrame;
 
-    public event EventHandler? RefreshRequested;
+    public event EventHandler? DetailsRequested;
     public event EventHandler? SettingsRequested;
     public event EventHandler<bool>? AttachmentChanged;
 
@@ -80,7 +80,7 @@ internal sealed class TaskbarToolbarForm : Form
         _toolTip.Draw += ToolTip_Draw;
         _toolTip.UseAnimation = false;
         _toolTip.UseFading = false;
-        _toolTip.SetToolTip(this, "UsageTray");
+        _toolTip.SetToolTip(this, null);
 
         _attachmentTimer.Tick += (_, _) => AttachOrReposition();
         _toolTipAnimationTimer.Tick += (_, _) => RedrawVisibleToolTip();
@@ -135,6 +135,13 @@ internal sealed class TaskbarToolbarForm : Form
             _toolTip.SetToolTip(this, null);
             _toolTipPositionArmed = false;
         }
+    }
+
+    public Rectangle GetScreenBounds()
+    {
+        return IsHandleCreated && GetWindowRect(Handle, out var bounds)
+            ? bounds.ToRectangle()
+            : RectangleToScreen(ClientRectangle);
     }
 
     private void ToolTip_Popup(object? sender, PopupEventArgs e)
@@ -560,7 +567,7 @@ internal sealed class TaskbarToolbarForm : Form
         {
             _pressed = false;
             Invalidate();
-            RefreshRequested?.Invoke(this, EventArgs.Empty);
+            DetailsRequested?.Invoke(this, EventArgs.Empty);
         }
 
         base.OnMouseUp(e);
