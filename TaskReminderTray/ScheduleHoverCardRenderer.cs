@@ -18,6 +18,7 @@ internal sealed class HoverCardContent
     public HashSet<DateOnly> ExpandedDates { get; } = [];
     public string? FocusIssueId { get; set; }
     public string? HoveredIssueId { get; set; }
+    public string? HoveredIssueAction { get; set; }
 
     public static HoverCardContent CreateStatus(
         string title,
@@ -89,6 +90,7 @@ internal sealed class HoverCardContent
 
 internal sealed record ScheduleIssueRegion(
     Rectangle Bounds,
+    Rectangle OpenBounds,
     Rectangle CopyBounds,
     IssueItem Issue);
 
@@ -336,28 +338,23 @@ internal static class UsageHoverCardRenderer
             graphics.FillEllipse(priorityBrush, bounds.Left + labelWidth,
                 rowTop + Scale(7, dpi), Scale(6, dpi), Scale(6, dpi));
             var textLeft = bounds.Left + labelWidth + Scale(12, dpi);
-            var copyWidth = Scale(28, dpi);
+            var actionsWidth = Scale(58, dpi);
             var textWidth = Math.Max(20,
-                bounds.Width - labelWidth - metaWidth - copyWidth - Scale(12, dpi));
+                bounds.Width - labelWidth - metaWidth - actionsWidth - Scale(12, dpi));
             var titleBounds = new Rectangle(textLeft, rowTop,
                 textWidth, Scale(21, dpi));
             DrawIssueTitle(graphics, issue, focused || isToday ? taskBoldFont : taskFont,
                 titleBrush, titleBounds, dpi, animationMilliseconds);
 
-            var copyBounds = new Rectangle(bounds.Right - copyWidth - Scale(5, dpi),
-                rowTop - Scale(3, dpi), copyWidth, Scale(25, dpi));
-            if (hovered)
-            {
-                FillRoundedRectangle(graphics, copyBounds, Scale(5, dpi), Blue);
-                using var copyPen = new Pen(Color.White, ScaleF(1.2F, dpi));
-                var iconSize = Scale(9, dpi);
-                var iconLeft = copyBounds.Left + (copyBounds.Width - iconSize) / 2;
-                var iconTop = copyBounds.Top + (copyBounds.Height - iconSize) / 2;
-                graphics.DrawRectangle(copyPen, iconLeft + Scale(3, dpi), iconTop,
-                    iconSize, iconSize);
-                graphics.DrawRectangle(copyPen, iconLeft, iconTop + Scale(3, dpi),
-                    iconSize, iconSize);
-            }
+            var buttonWidth = Scale(26, dpi);
+            var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(5, dpi),
+                rowTop - Scale(3, dpi), buttonWidth, Scale(25, dpi));
+            var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(4, dpi),
+                copyBounds.Top, buttonWidth, copyBounds.Height);
+            DrawActionButton(graphics, openBounds, dpi, "open",
+                hovered && content.HoveredIssueAction == "open");
+            DrawActionButton(graphics, copyBounds, dpi, "copy",
+                hovered && content.HoveredIssueAction == "copy");
 
             var meta = focused
                 ? "当前重点"
@@ -376,10 +373,11 @@ internal static class UsageHoverCardRenderer
                 Trimming = StringTrimming.EllipsisCharacter,
                 FormatFlags = StringFormatFlags.NoWrap
             };
-            var metaBounds = new Rectangle(bounds.Right - metaWidth - copyWidth,
+            var metaBounds = new Rectangle(bounds.Right - metaWidth - actionsWidth,
                 rowTop + Scale(2, dpi), metaWidth - Scale(4, dpi), Scale(18, dpi));
             graphics.DrawString(meta, smallFont, metaBrush, metaBounds, right);
-            interactions?.Issues.Add(new ScheduleIssueRegion(titleBounds, copyBounds, issue));
+            interactions?.Issues.Add(new ScheduleIssueRegion(titleBounds, openBounds,
+                copyBounds, issue));
             if (index == 0 && orderedIssues.Length > 1)
             {
                 interactions?.Expanders.Add(new ScheduleExpandRegion(metaBounds, date, expanded));
@@ -417,14 +415,21 @@ internal static class UsageHoverCardRenderer
         graphics.DrawString(date?.ToString("M/d") ?? "未排期", smallFont, mutedBrush,
             new RectangleF(bounds.Left, bounds.Top + Scale(7, dpi),
                 bounds.Width - Scale(11, dpi), Scale(17, dpi)), right);
+        var buttonWidth = Scale(26, dpi);
+        var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(8, dpi),
+            bounds.Top + Scale(25, dpi), buttonWidth, Scale(25, dpi));
+        var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(4, dpi),
+            copyBounds.Top, buttonWidth, copyBounds.Height);
         DrawIssueTitle(graphics, issue, taskBoldFont, primaryBrush,
             new RectangleF(bounds.Left + Scale(11, dpi), bounds.Top + Scale(27, dpi),
-                bounds.Width - Scale(165, dpi), Scale(20, dpi)), dpi,
+                bounds.Width - Scale(224, dpi), Scale(20, dpi)), dpi,
             animationMilliseconds);
+        DrawActionButton(graphics, openBounds, dpi, "open", false);
+        DrawActionButton(graphics, copyBounds, dpi, "copy", false);
         interactions?.Issues.Add(new ScheduleIssueRegion(
             new Rectangle(bounds.Left + Scale(11, dpi), bounds.Top + Scale(27, dpi),
-                bounds.Width - Scale(165, dpi), Scale(20, dpi)),
-            Rectangle.Empty, issue));
+                bounds.Width - Scale(224, dpi), Scale(20, dpi)),
+            openBounds, copyBounds, issue));
         var metadata = $"{issue.Priority} · {ShortStatus(issue.Status)}";
         graphics.DrawString(metadata, smallFont, secondaryBrush,
             new RectangleF(bounds.Right - Scale(155, dpi), bounds.Top + Scale(29, dpi),
@@ -444,6 +449,37 @@ internal static class UsageHoverCardRenderer
         }
 
         return date > today ? "计划开发" : ShortStatus(issue.Status);
+    }
+
+    private static void DrawActionButton(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        string action,
+        bool hovered)
+    {
+        FillRoundedRectangle(graphics, bounds, Scale(5, dpi),
+            hovered ? Blue : SurfaceAlt);
+        using var pen = new Pen(hovered ? Color.White : SecondaryText, ScaleF(1.2F, dpi));
+        if (action == "copy")
+        {
+            var iconSize = Scale(8, dpi);
+            var left = bounds.Left + (bounds.Width - iconSize) / 2;
+            var top = bounds.Top + (bounds.Height - iconSize) / 2;
+            graphics.DrawRectangle(pen, left + Scale(3, dpi), top, iconSize, iconSize);
+            graphics.DrawRectangle(pen, left, top + Scale(3, dpi), iconSize, iconSize);
+            return;
+        }
+
+        var box = new Rectangle(bounds.Left + Scale(7, dpi), bounds.Top + Scale(10, dpi),
+            Scale(9, dpi), Scale(8, dpi));
+        graphics.DrawRectangle(pen, box);
+        graphics.DrawLine(pen, bounds.Left + Scale(12, dpi), bounds.Top + Scale(7, dpi),
+            bounds.Left + Scale(19, dpi), bounds.Top + Scale(7, dpi));
+        graphics.DrawLine(pen, bounds.Left + Scale(19, dpi), bounds.Top + Scale(7, dpi),
+            bounds.Left + Scale(19, dpi), bounds.Top + Scale(14, dpi));
+        graphics.DrawLine(pen, bounds.Left + Scale(12, dpi), bounds.Top + Scale(14, dpi),
+            bounds.Left + Scale(19, dpi), bounds.Top + Scale(7, dpi));
     }
 
     private static void DrawIssueTitle(

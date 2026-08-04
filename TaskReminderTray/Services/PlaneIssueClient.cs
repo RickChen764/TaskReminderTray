@@ -125,7 +125,12 @@ internal sealed class PlaneIssueClient : IDisposable
             }
 
             var sequence = Text(item, "sequence_id", "sequence", "number");
-            var projectId = Text(item, "project_id") ?? Text(item, "project");
+            var project = Object(item, "project", "project_detail");
+            var projectId = Text(item, "project_id") ??
+                            (project is { } projectObject
+                                ? Text(projectObject, "id", "uuid", "project_id")
+                                : null) ??
+                            Text(item, "project");
             string? projectIdentifier = null;
             if (projects is not null && projectId is not null)
             {
@@ -166,10 +171,9 @@ internal sealed class PlaneIssueClient : IDisposable
                                     : Text(item, "issue_type", "type")) ??
                                 issueTypeName ?? issueTypeId ?? string.Empty;
             var kind = IsBug(issueTypeText) ? IssueKind.Bug : IssueKind.Task;
-            var project = Object(item, "project", "project_detail");
             var projectName = Text(item, "project_name") ??
-                              (project is { } projectObject
-                                  ? Text(projectObject, "name", "identifier")
+                              (project is { } projectDetail
+                                  ? Text(projectDetail, "name", "identifier")
                                   : null) ?? projectIdentifier ?? string.Empty;
             var startDate = Date(item, "start_date", "startDate", "planned_start_date");
             var dueDate = Date(item, "target_date", "due_date", "end_date", "dueDate");
@@ -181,8 +185,7 @@ internal sealed class PlaneIssueClient : IDisposable
             var subIssueCount = Integer(item, "sub_issues_count", "sub_issue_count");
             var completed = Boolean(item, "completed", "is_completed") ||
                             IsCompletedState(stateGroup, status);
-            var issueUrl = new Uri(source.BaseUri,
-                $"/{Uri.EscapeDataString(source.WorkspaceSlug)}/issues/{Uri.EscapeDataString(id)}");
+            var issueUrl = BuildIssuePageUri(source, projectId, id, key);
 
             issues.Add(new IssueItem(id, key, title, kind, status, stateGroup,
                 startDate, dueDate, updated, projectName, completed, issueUrl.ToString(),
@@ -190,6 +193,21 @@ internal sealed class PlaneIssueClient : IDisposable
         }
 
         return issues;
+    }
+
+    internal static Uri BuildIssuePageUri(
+        SourceLocation source,
+        string? projectId,
+        string issueId,
+        string issueKey)
+    {
+        var workspace = Uri.EscapeDataString(source.WorkspaceSlug);
+        var issue = Uri.EscapeDataString(issueId);
+        var anchor = Uri.EscapeDataString(issueKey);
+        return string.IsNullOrWhiteSpace(projectId)
+            ? new Uri(source.BaseUri, $"/{workspace}/issues/{issue}#{anchor}")
+            : new Uri(source.BaseUri,
+                $"/{workspace}/projects/{Uri.EscapeDataString(projectId)}/issues/{issue}#{anchor}");
     }
 
     internal static string ParseCurrentUserId(string json)

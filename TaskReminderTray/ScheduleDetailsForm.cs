@@ -182,7 +182,7 @@ internal sealed class ScheduleDetailsForm : Form
         private HoverCardContent? _content;
         private IssueItem? _menuIssue;
         private string? _hoveredIssueId;
-        private bool _hoveringCopy;
+        private string? _hoveredAction;
 
         public event Action? LayoutChanged;
         public event Action<IssueItem?>? FocusChanged;
@@ -204,7 +204,7 @@ internal sealed class ScheduleDetailsForm : Form
             };
             BuildIssueMenu();
             MouseMove += DetailsSurface_MouseMove;
-            MouseLeave += (_, _) => SetHoveredIssue(null, hoveringCopy: false);
+            MouseLeave += (_, _) => SetHoveredIssue(null, action: null);
             MouseUp += DetailsSurface_MouseUp;
         }
 
@@ -242,38 +242,48 @@ internal sealed class ScheduleDetailsForm : Form
         private void DetailsSurface_MouseMove(object? sender, MouseEventArgs e)
         {
             var region = _interactions.Issues.LastOrDefault(item =>
-                item.Bounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
-            var hoveringCopy = region is not null && !region.CopyBounds.IsEmpty &&
-                               region.CopyBounds.Contains(e.Location);
-            SetHoveredIssue(region?.Issue.Id, hoveringCopy);
-            Cursor = region is not null ||
+                item.OpenBounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
+            var action = region is null
+                ? null
+                : region.OpenBounds.Contains(e.Location)
+                    ? "open"
+                    : "copy";
+            SetHoveredIssue(region?.Issue.Id, action);
+            Cursor = action is not null ||
                      _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location))
                 ? Cursors.Hand
                 : Cursors.Default;
         }
 
-        private void SetHoveredIssue(string? issueId, bool hoveringCopy)
+        private void SetHoveredIssue(string? issueId, string? action)
         {
             if (string.Equals(_hoveredIssueId, issueId, StringComparison.OrdinalIgnoreCase) &&
-                _hoveringCopy == hoveringCopy)
+                _hoveredAction == action)
             {
                 return;
             }
 
             _hoveredIssueId = issueId;
-            _hoveringCopy = hoveringCopy;
+            _hoveredAction = action;
             if (_content is not null)
             {
                 _content.HoveredIssueId = issueId;
+                _content.HoveredIssueAction = action;
             }
-            _toolTip.SetToolTip(this, hoveringCopy ? "复制单信息" : null);
+            _toolTip.SetToolTip(this, action switch
+            {
+                "open" => "打开工单",
+                "copy" => "复制单信息",
+                _ => null
+            });
             Invalidate();
         }
 
         private void DetailsSurface_MouseUp(object? sender, MouseEventArgs e)
         {
             var issueRegion = _interactions.Issues.LastOrDefault(item =>
-                item.Bounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
+                item.Bounds.Contains(e.Location) || item.OpenBounds.Contains(e.Location) ||
+                item.CopyBounds.Contains(e.Location));
             if (e.Button == MouseButtons.Right && issueRegion is not null)
             {
                 _menuIssue = issueRegion.Issue;
@@ -288,15 +298,16 @@ internal sealed class ScheduleDetailsForm : Form
 
             if (issueRegion is not null)
             {
-                if (!issueRegion.CopyBounds.IsEmpty && issueRegion.CopyBounds.Contains(e.Location))
+                if (issueRegion.CopyBounds.Contains(e.Location))
                 {
                     CopyText(PersonalWorkStore.FormatIssueInformation(issueRegion.Issue));
                     _toolTip.Show("已复制单信息", this, e.X, e.Y - 34, 1300);
                 }
-                else
+                else if (issueRegion.OpenBounds.Contains(e.Location))
                 {
                     OpenIssue(issueRegion.Issue);
                 }
+                // 标题区域仅用于展示与右键菜单，不再执行页面跳转。
                 return;
             }
 

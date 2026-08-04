@@ -75,6 +75,26 @@ public sealed class PlaneIssueClientTests
         Assert.Equal("A", issue.Priority);
         Assert.Equal(1.5m, issue.Workload);
         Assert.Equal(WorkStage.Development, issue.Stage);
+        Assert.Equal(
+            "https://plane.example.com/jx/projects/project-1/issues/issue-1#SJ-816",
+            issue.SourceUrl);
+    }
+
+    [Fact]
+    public void BuildIssuePageUri_UsesPlaneProjectRouteAndIssueKeyAnchor()
+    {
+        var source = PlaneIssueClient.ParseSourceUrl(
+            "https://plane.example.com/jx/workspace-views/my-all-issues");
+
+        var uri = PlaneIssueClient.BuildIssuePageUri(source,
+            "2332bfaf-26d9-4eee-866f-ad61f0835f3c",
+            "39d2e6a3-44a1-4fb4-ba4c-729d3e0a7723",
+            "SJ-816");
+
+        Assert.Equal(
+            "https://plane.example.com/jx/projects/2332bfaf-26d9-4eee-866f-ad61f0835f3c/" +
+            "issues/39d2e6a3-44a1-4fb4-ba4c-729d3e0a7723#SJ-816",
+            uri.AbsoluteUri);
     }
 
     [Fact]

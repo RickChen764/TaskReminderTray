@@ -100,5 +100,7 @@ public sealed class HoverCardTests
         Assert.Contains(map.Expanders, region => region.Date == today && region.IsExpanded);
         Assert.Contains(map.Issues, region => region.Issue.Id == "1");
         Assert.Contains(map.Issues, region => region.Issue.Id == "2");
+        Assert.All(map.Issues, region => Assert.False(region.OpenBounds.IsEmpty));
+        Assert.All(map.Issues, region => Assert.False(region.CopyBounds.IsEmpty));
     }
 }
