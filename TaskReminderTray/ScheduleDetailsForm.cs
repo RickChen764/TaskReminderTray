@@ -77,6 +77,8 @@ internal sealed class ScheduleDetailsForm : Form
 
         var size = UsageHoverCardRenderer.Measure(_surface.Content, DeviceDpi);
         ClientSize = size;
+        PerformLayout();
+        _surface.RefreshInteractionLayout();
         if (Visible && !_anchorBounds.IsEmpty)
         {
             PositionNear(_anchorBounds);
@@ -179,10 +181,9 @@ internal sealed class ScheduleDetailsForm : Form
             ShowAlways = true
         };
         private readonly ContextMenuStrip _issueMenu = new();
+        private readonly List<IssueActionButton> _actionButtons = [];
         private HoverCardContent? _content;
         private IssueItem? _menuIssue;
-        private string? _hoveredIssueId;
-        private string? _hoveredAction;
 
         public event Action? LayoutChanged;
         public event Action<IssueItem?>? FocusChanged;
@@ -204,7 +205,6 @@ internal sealed class ScheduleDetailsForm : Form
             };
             BuildIssueMenu();
             MouseMove += DetailsSurface_MouseMove;
-            MouseLeave += (_, _) => SetHoveredIssue(null, action: null);
             MouseUp += DetailsSurface_MouseUp;
         }
 
@@ -241,49 +241,15 @@ internal sealed class ScheduleDetailsForm : Form
 
         private void DetailsSurface_MouseMove(object? sender, MouseEventArgs e)
         {
-            var region = _interactions.Issues.LastOrDefault(item =>
-                item.OpenBounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
-            var action = region is null
-                ? null
-                : region.OpenBounds.Contains(e.Location)
-                    ? "open"
-                    : "copy";
-            SetHoveredIssue(region?.Issue.Id, action);
-            Cursor = action is not null ||
-                     _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location))
+            Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location))
                 ? Cursors.Hand
                 : Cursors.Default;
-        }
-
-        private void SetHoveredIssue(string? issueId, string? action)
-        {
-            if (string.Equals(_hoveredIssueId, issueId, StringComparison.OrdinalIgnoreCase) &&
-                _hoveredAction == action)
-            {
-                return;
-            }
-
-            _hoveredIssueId = issueId;
-            _hoveredAction = action;
-            if (_content is not null)
-            {
-                _content.HoveredIssueId = issueId;
-                _content.HoveredIssueAction = action;
-            }
-            _toolTip.SetToolTip(this, action switch
-            {
-                "open" => "打开工单",
-                "copy" => "复制单信息",
-                _ => null
-            });
-            Invalidate();
         }
 
         private void DetailsSurface_MouseUp(object? sender, MouseEventArgs e)
         {
             var issueRegion = _interactions.Issues.LastOrDefault(item =>
-                item.Bounds.Contains(e.Location) || item.OpenBounds.Contains(e.Location) ||
-                item.CopyBounds.Contains(e.Location));
+                item.Bounds.Contains(e.Location) || item.StatusBounds.Contains(e.Location));
             if (e.Button == MouseButtons.Right && issueRegion is not null)
             {
                 _menuIssue = issueRegion.Issue;
@@ -296,37 +262,27 @@ internal sealed class ScheduleDetailsForm : Form
                 return;
             }
 
-            if (issueRegion is not null)
-            {
-                if (issueRegion.CopyBounds.Contains(e.Location))
-                {
-                    CopyText(PersonalWorkStore.FormatIssueInformation(issueRegion.Issue));
-                    _toolTip.Show("已复制单信息", this, e.X, e.Y - 34, 1300);
-                }
-                else if (issueRegion.OpenBounds.Contains(e.Location))
-                {
-                    OpenIssue(issueRegion.Issue);
-                }
-                // 标题区域仅用于展示与右键菜单，不再执行页面跳转。
-                return;
-            }
-
             var expander = _interactions.Expanders.LastOrDefault(item =>
                 item.Bounds.Contains(e.Location));
-            if (expander is null || _content is null)
+            if (expander is not null && _content is not null)
             {
+                if (expander.IsExpanded)
+                {
+                    _content.ExpandedDates.Remove(expander.Date);
+                }
+                else
+                {
+                    _content.ExpandedDates.Add(expander.Date);
+                }
+                LayoutChanged?.Invoke();
                 return;
             }
 
-            if (expander.IsExpanded)
+            if (issueRegion is not null)
             {
-                _content.ExpandedDates.Remove(expander.Date);
+                // 标题和状态区域仅用于展示与右键菜单，不执行页面跳转。
+                return;
             }
-            else
-            {
-                _content.ExpandedDates.Add(expander.Date);
-            }
-            LayoutChanged?.Invoke();
         }
 
         private void ToggleFocus()
@@ -401,6 +357,71 @@ internal sealed class ScheduleDetailsForm : Form
             }
         }
 
+        public void RefreshInteractionLayout()
+        {
+            if (_content is null || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            {
+                return;
+            }
+
+            using var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height);
+            using var graphics = Graphics.FromImage(bitmap);
+            UsageHoverCardRenderer.Draw(graphics, new Rectangle(Point.Empty, ClientSize),
+                DeviceDpi, _content, _interactions);
+            SynchronizeActionButtons();
+        }
+
+        private void SynchronizeActionButtons()
+        {
+            var required = _interactions.Issues.Count * 2;
+            while (_actionButtons.Count < required)
+            {
+                var button = new IssueActionButton();
+                button.Click += ActionButton_Click;
+                _actionButtons.Add(button);
+                Controls.Add(button);
+                button.BringToFront();
+            }
+
+            for (var index = 0; index < _actionButtons.Count; index++)
+            {
+                if (index >= required)
+                {
+                    _actionButtons[index].Visible = false;
+                    continue;
+                }
+
+                var region = _interactions.Issues[index / 2];
+                var open = (index & 1) == 0;
+                var button = _actionButtons[index];
+                button.Issue = region.Issue;
+                button.Action = open ? IssueAction.Open : IssueAction.Copy;
+                button.Bounds = open ? region.OpenBounds : region.CopyBounds;
+                button.AccessibleName = open ? "打开工单" : "复制单信息";
+                button.TabStop = true;
+                button.Visible = true;
+                _toolTip.SetToolTip(button, button.AccessibleName);
+                button.BringToFront();
+            }
+        }
+
+        private void ActionButton_Click(object? sender, EventArgs e)
+        {
+            if (sender is not IssueActionButton { Issue: { } issue } button)
+            {
+                return;
+            }
+
+            if (button.Action == IssueAction.Open)
+            {
+                OpenIssue(issue);
+                return;
+            }
+
+            CopyText(PersonalWorkStore.FormatIssueInformation(issue));
+            _toolTip.Show("已复制单信息", button, button.Width / 2, -28, 1300);
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -409,8 +430,94 @@ internal sealed class ScheduleDetailsForm : Form
                 _animationTimer.Dispose();
                 _toolTip.Dispose();
                 _issueMenu.Dispose();
+                foreach (var button in _actionButtons)
+                {
+                    button.Dispose();
+                }
+                _actionButtons.Clear();
             }
             base.Dispose(disposing);
+        }
+
+        private enum IssueAction
+        {
+            Open,
+            Copy
+        }
+
+        private sealed class IssueActionButton : Button
+        {
+            public IssueItem? Issue { get; set; }
+            public IssueAction Action { get; set; }
+
+            public IssueActionButton()
+            {
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+                BackColor = Color.FromArgb(35, 41, 51);
+                ForeColor = Color.FromArgb(184, 194, 210);
+                Cursor = Cursors.Hand;
+                UseVisualStyleBackColor = false;
+                SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                BackColor = Color.FromArgb(88, 142, 238);
+                ForeColor = Color.White;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                BackColor = Color.FromArgb(35, 41, 51);
+                ForeColor = Color.FromArgb(184, 194, 210);
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using var path = RoundedButton(ClientRectangle, 5);
+                using var brush = new SolidBrush(BackColor);
+                using var pen = new Pen(ForeColor, 1.2F);
+                e.Graphics.FillPath(brush, path);
+                if (Action == IssueAction.Copy)
+                {
+                    var left = (Width - 8) / 2;
+                    var top = (Height - 8) / 2;
+                    e.Graphics.DrawRectangle(pen, left + 3, top, 8, 8);
+                    e.Graphics.DrawRectangle(pen, left, top + 3, 8, 8);
+                }
+                else
+                {
+                    var box = new Rectangle((Width - 12) / 2, (Height - 8) / 2 + 2, 9, 8);
+                    e.Graphics.DrawRectangle(pen, box);
+                    e.Graphics.DrawLine(pen, box.Left + 5, box.Top - 3,
+                        box.Right + 3, box.Top - 3);
+                    e.Graphics.DrawLine(pen, box.Right + 3, box.Top - 3,
+                        box.Right + 3, box.Top + 4);
+                    e.Graphics.DrawLine(pen, box.Left + 5, box.Top + 4,
+                        box.Right + 3, box.Top - 3);
+                }
+            }
+
+            private static GraphicsPath RoundedButton(Rectangle bounds, int radius)
+            {
+                var path = new GraphicsPath();
+                var diameter = radius * 2;
+                var safe = Rectangle.Inflate(bounds, -1, -1);
+                path.AddArc(safe.Left, safe.Top, diameter, diameter, 180, 90);
+                path.AddArc(safe.Right - diameter, safe.Top, diameter, diameter, 270, 90);
+                path.AddArc(safe.Right - diameter, safe.Bottom - diameter,
+                    diameter, diameter, 0, 90);
+                path.AddArc(safe.Left, safe.Bottom - diameter,
+                    diameter, diameter, 90, 90);
+                path.CloseFigure();
+                return path;
+            }
         }
     }
 }
