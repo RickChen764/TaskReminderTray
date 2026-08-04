@@ -108,25 +108,7 @@ internal sealed class PersonalWorkStore
     }
 
     internal static string FormatIssueInformation(IssueItem issue)
-    {
-        var lines = new List<string>
-        {
-            $"{issue.Key} {issue.Title}",
-            $"类型：{(issue.Kind == IssueKind.Bug ? "Bug" : "任务")}",
-            $"状态：{issue.Status}",
-            $"优先级：{issue.Priority}"
-        };
-        if (issue.StartDate is not null || issue.DueDate is not null)
-        {
-            lines.Add($"排期：{issue.StartDate?.ToString("yyyy-MM-dd") ?? "未设置"} ～ " +
-                      $"{issue.DueDate?.ToString("yyyy-MM-dd") ?? "未设置"}");
-        }
-        if (!string.IsNullOrWhiteSpace(issue.SourceUrl))
-        {
-            lines.Add(issue.SourceUrl);
-        }
-        return string.Join(Environment.NewLine, lines);
-    }
+        => $"{issue.Key} {issue.Title}";
 
     private void Save(PersonalWorkState state)
     {

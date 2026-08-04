@@ -341,8 +341,9 @@ public sealed class PlaneIssueClientTests
             Assert.Single(state.Reminders);
             Assert.Equal(remindAt, reloaded.Reminders[0].RemindAt);
             Assert.Contains("SJ-816 图集查找预制引用功能编写", information);
-            Assert.Contains("类型：Bug", information);
-            Assert.Contains(issue.SourceUrl, information);
+            Assert.Equal("SJ-816 图集查找预制引用功能编写", information);
+            Assert.DoesNotContain("类型：", information);
+            Assert.DoesNotContain(issue.SourceUrl, information);
 
             Assert.Empty(store.RemoveReminder(reloaded.Reminders[0].Id).Reminders);
         }
