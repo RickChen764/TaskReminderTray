@@ -1,0 +1,508 @@
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using TaskReminderTray.Models;
+
+namespace UsageTray;
+
+internal sealed class HoverCardContent
+{
+    private long _animationStartedAt;
+    private long _lastAnimationFrameAt;
+
+    public string Title { get; init; } = "任务提醒";
+    public string Message { get; init; } = string.Empty;
+    public Color AccentColor { get; init; } = Color.FromArgb(69, 139, 226);
+    public ScheduleSummary? Summary { get; init; }
+    public DateOnly Today { get; init; } = DateOnly.FromDateTime(DateTime.Now);
+    public DateTime UpdatedAt { get; init; } = DateTime.Now;
+
+    public static HoverCardContent CreateStatus(
+        string title,
+        string message,
+        Color accentColor,
+        string? footer = null) => new()
+        {
+            Title = title,
+            Message = string.IsNullOrWhiteSpace(footer) ? message : $"{message}\n{footer}",
+            AccentColor = accentColor
+        };
+
+    public static HoverCardContent CreateSchedule(
+        ScheduleSummary summary,
+        DateOnly today,
+        DateTime updatedAt,
+        Color accentColor) => new()
+        {
+            Title = "本周开发安排",
+            Message = "按天查看当前开发工作",
+            Summary = summary,
+            Today = today,
+            UpdatedAt = updatedAt,
+            AccentColor = accentColor
+        };
+
+    public string ToPlainText()
+    {
+        if (Summary is null)
+        {
+            return $"{Title}\n{Message}";
+        }
+
+        var weekStart = ScheduleSummary.StartOfWeek(Today);
+        var lines = new List<string> { $"{Title} {weekStart:M/d}–{weekStart.AddDays(6):M/d}" };
+        for (var index = 0; index < 7; index++)
+        {
+            var date = weekStart.AddDays(index);
+            var issues = Summary.GetIssuesForDate(date);
+            lines.Add(issues.Count == 0
+                ? $"{Weekday(date)} {date:M/d}：暂无安排"
+                : $"{Weekday(date)} {date:M/d}：" + string.Join("；",
+                    issues.Select(issue => $"{issue.Key} {issue.DisplayTitle}")));
+        }
+
+        if (Summary.GetNextDevelopmentAfter(weekStart.AddDays(6)) is { } next)
+        {
+            lines.Add($"接下来：{next.Key} {next.DisplayTitle}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    internal long GetAnimationElapsedMilliseconds()
+    {
+        var now = Environment.TickCount64;
+        if (_animationStartedAt == 0 || now - _lastAnimationFrameAt > 300)
+        {
+            _animationStartedAt = now;
+        }
+
+        _lastAnimationFrameAt = now;
+        return Math.Max(0, now - _animationStartedAt);
+    }
+
+    private static string Weekday(DateOnly date) =>
+        new[] { "周日", "周一", "周二", "周三", "周四", "周五", "周六" }[(int)date.DayOfWeek];
+}
+
+internal static class UsageHoverCardRenderer
+{
+    private const int LogicalWidth = 540;
+    private const int StatusWidth = 450;
+    private const int Padding = 16;
+    private const int DayRowHeight = 38;
+
+    private static readonly Color Background = Color.FromArgb(24, 27, 33);
+    private static readonly Color Surface = Color.FromArgb(31, 35, 43);
+    private static readonly Color SurfaceAlt = Color.FromArgb(35, 41, 51);
+    private static readonly Color Border = Color.FromArgb(54, 60, 71);
+    private static readonly Color PrimaryText = Color.FromArgb(244, 246, 250);
+    private static readonly Color SecondaryText = Color.FromArgb(184, 194, 210);
+    private static readonly Color MutedText = Color.FromArgb(126, 139, 158);
+    private static readonly Color Blue = Color.FromArgb(88, 142, 238);
+    private static readonly Color Green = Color.FromArgb(57, 199, 127);
+    private static readonly Color Orange = Color.FromArgb(244, 171, 68);
+    private static readonly Color Red = Color.FromArgb(235, 83, 96);
+    private static readonly Color Purple = Color.FromArgb(170, 116, 232);
+
+    public static Size Measure(HoverCardContent content, int dpi)
+    {
+        if (content.Summary is null)
+        {
+            var lines = Math.Max(1, content.Message.Split('\n').Length);
+            return new Size(Scale(StatusWidth, dpi), Scale(124 + lines * 20, dpi));
+        }
+
+        // 页头 + 七天 + 接下来 + 弱化概览；操作说明由右键菜单承担。
+        return new Size(Scale(LogicalWidth, dpi), Scale(424, dpi));
+    }
+
+    public static void Draw(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        HoverCardContent content)
+    {
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        graphics.Clear(Background);
+        using var border = new Pen(Border, ScaleF(1, dpi));
+        graphics.DrawRectangle(border, bounds.Left, bounds.Top,
+            Math.Max(0, bounds.Width - 1), Math.Max(0, bounds.Height - 1));
+        if (content.Summary is null)
+        {
+            DrawStatus(graphics, bounds, dpi, content);
+            return;
+        }
+
+        DrawWeek(graphics, bounds, dpi, content);
+    }
+
+    private static void DrawStatus(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        HoverCardContent content)
+    {
+        var padding = Scale(18, dpi);
+        using var titleFont = Font(12F, FontStyle.Bold, dpi);
+        using var messageFont = Font(9F, FontStyle.Regular, dpi);
+        using var titleBrush = new SolidBrush(PrimaryText);
+        using var messageBrush = new SolidBrush(SecondaryText);
+        using var accentBrush = new SolidBrush(content.AccentColor);
+        graphics.FillRectangle(accentBrush, bounds.Left, bounds.Top, Scale(4, dpi), bounds.Height);
+        graphics.DrawString(content.Title, titleFont, titleBrush,
+            bounds.Left + padding, bounds.Top + padding);
+        graphics.DrawString(content.Message, messageFont, messageBrush,
+            new RectangleF(bounds.Left + padding, bounds.Top + Scale(52, dpi),
+                bounds.Width - padding * 2, bounds.Height - Scale(68, dpi)));
+    }
+
+    private static void DrawWeek(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        HoverCardContent content)
+    {
+        var summary = content.Summary!;
+        var animationMilliseconds = content.GetAnimationElapsedMilliseconds();
+        var padding = Scale(Padding, dpi);
+        var x = bounds.Left + padding;
+        var width = bounds.Width - padding * 2;
+        var y = bounds.Top + Scale(13, dpi);
+        var weekStart = ScheduleSummary.StartOfWeek(content.Today);
+        var weekEnd = weekStart.AddDays(6);
+
+        using var headingFont = Font(10.5F, FontStyle.Bold, dpi);
+        using var dayFont = Font(8F, FontStyle.Bold, dpi);
+        using var dateFont = Font(7.5F, FontStyle.Regular, dpi);
+        using var taskFont = Font(8.5F, FontStyle.Regular, dpi);
+        using var taskBoldFont = Font(8.5F, FontStyle.Bold, dpi);
+        using var smallFont = Font(7.3F, FontStyle.Regular, dpi);
+        using var primaryBrush = new SolidBrush(PrimaryText);
+        using var secondaryBrush = new SolidBrush(SecondaryText);
+        using var mutedBrush = new SolidBrush(MutedText);
+
+        graphics.DrawString(content.Title, headingFont, primaryBrush, x, y);
+        using (var right = new StringFormat { Alignment = StringAlignment.Far })
+        {
+            graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
+                new RectangleF(x, y - Scale(1, dpi), width, Scale(19, dpi)), right);
+            graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
+                new RectangleF(x, y + Scale(17, dpi), width, Scale(15, dpi)), right);
+        }
+        y += Scale(34, dpi);
+
+        for (var dayIndex = 0; dayIndex < 7; dayIndex++)
+        {
+            var date = weekStart.AddDays(dayIndex);
+            var issues = summary.GetIssuesForDate(date);
+            var isToday = date == content.Today;
+            var row = new Rectangle(x, y, width, Scale(DayRowHeight, dpi));
+            DrawDayRow(graphics, row, dpi, date, issues, isToday,
+                dayFont, dateFont, taskFont, taskBoldFont, smallFont,
+                animationMilliseconds);
+            y += Scale(DayRowHeight, dpi);
+        }
+
+        y += Scale(9, dpi);
+        var next = summary.GetNextDevelopmentAfter(weekEnd);
+        DrawNext(graphics, new Rectangle(x, y, width, Scale(56, dpi)), dpi,
+            next, taskFont, taskBoldFont, smallFont, animationMilliseconds);
+        y += Scale(65, dpi);
+
+        var overview = new Rectangle(x, y, width, Scale(27, dpi));
+        FillRoundedRectangle(graphics, overview, Scale(5, dpi), Surface);
+        var overviewText = $"待跟进 {summary.FollowUpCount}   ·   " +
+                           $"等待输入 {summary.WaitingCount}   ·   Bug {summary.BugCount}";
+        using (var centered = new StringFormat
+               {
+                   Alignment = StringAlignment.Center,
+                   LineAlignment = StringAlignment.Center
+               })
+        {
+            graphics.DrawString(overviewText, smallFont, mutedBrush, overview, centered);
+        }
+    }
+
+    private static void DrawDayRow(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        DateOnly date,
+        IReadOnlyList<IssueItem> issues,
+        bool isToday,
+        Font dayFont,
+        Font dateFont,
+        Font taskFont,
+        Font taskBoldFont,
+        Font smallFont,
+        long animationMilliseconds)
+    {
+        if (isToday)
+        {
+            FillRoundedRectangle(graphics, bounds, Scale(6, dpi), SurfaceAlt);
+            using var borderPath = RoundedRectangle(bounds, Scale(6, dpi));
+            using var todayPen = new Pen(Color.FromArgb(90, Green), ScaleF(1, dpi));
+            graphics.DrawPath(todayPen, borderPath);
+        }
+        else if (((int)date.DayOfWeek & 1) == 0)
+        {
+            FillRoundedRectangle(graphics, bounds, Scale(4, dpi), Surface);
+        }
+
+        var labelWidth = Scale(57, dpi);
+        var metaWidth = Scale(122, dpi);
+        using var dayBrush = new SolidBrush(isToday ? Green : SecondaryText);
+        using var dateBrush = new SolidBrush(isToday ? Green : MutedText);
+        var weekday = new[] { "周日", "周一", "周二", "周三", "周四", "周五", "周六" }[(int)date.DayOfWeek];
+        graphics.DrawString(weekday, dayFont, dayBrush,
+            bounds.Left + Scale(8, dpi), bounds.Top + Scale(5, dpi));
+        graphics.DrawString(date.ToString("M/d"), dateFont, dateBrush,
+            bounds.Left + Scale(8, dpi), bounds.Top + Scale(20, dpi));
+
+        if (issues.Count == 0)
+        {
+            using var mutedBrush = new SolidBrush(MutedText);
+            graphics.DrawString("暂无安排", taskFont, mutedBrush,
+                bounds.Left + labelWidth, bounds.Top + Scale(11, dpi));
+            return;
+        }
+
+        var issue = issues[0];
+        using var priorityBrush = new SolidBrush(PriorityColor(issue.Priority));
+        using var titleBrush = new SolidBrush(isToday ? PrimaryText : SecondaryText);
+        using var metaBrush = new SolidBrush(issue.Stage == WorkStage.FollowUp ? Orange : MutedText);
+        graphics.FillEllipse(priorityBrush, bounds.Left + labelWidth,
+            bounds.Top + Scale(16, dpi), Scale(6, dpi), Scale(6, dpi));
+        var textLeft = bounds.Left + labelWidth + Scale(12, dpi);
+        var titleFont = isToday ? taskBoldFont : taskFont;
+        var textWidth = Math.Max(20,
+            bounds.Width - labelWidth - metaWidth - Scale(12, dpi));
+        DrawIssueTitle(graphics, issue, titleFont, titleBrush,
+            new RectangleF(textLeft, bounds.Top + Scale(9, dpi), textWidth,
+                Scale(20, dpi)), dpi, animationMilliseconds);
+
+        var meta = FormatDayStatus(issue, date, DateOnly.FromDateTime(DateTime.Now));
+        if (issues.Count > 1)
+        {
+            meta += $"  +{issues.Count - 1}";
+        }
+        using var right = new StringFormat
+        {
+            Alignment = StringAlignment.Far,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        graphics.DrawString(meta, smallFont, metaBrush,
+            new RectangleF(bounds.Right - metaWidth, bounds.Top + Scale(11, dpi),
+                metaWidth - Scale(8, dpi), Scale(18, dpi)), right);
+    }
+
+    private static void DrawNext(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        IssueItem? issue,
+        Font taskFont,
+        Font taskBoldFont,
+        Font smallFont,
+        long animationMilliseconds)
+    {
+        FillRoundedRectangle(graphics, bounds, Scale(6, dpi), Surface);
+        using var labelBrush = new SolidBrush(Blue);
+        using var primaryBrush = new SolidBrush(PrimaryText);
+        using var secondaryBrush = new SolidBrush(SecondaryText);
+        using var mutedBrush = new SolidBrush(MutedText);
+        graphics.DrawString("接下来", smallFont, labelBrush,
+            bounds.Left + Scale(11, dpi), bounds.Top + Scale(7, dpi));
+        if (issue is null)
+        {
+            graphics.DrawString("暂无后续开发任务", taskFont, mutedBrush,
+                bounds.Left + Scale(11, dpi), bounds.Top + Scale(28, dpi));
+            return;
+        }
+
+        using var right = new StringFormat { Alignment = StringAlignment.Far };
+        var date = issue.StartDate ?? issue.DueDate;
+        graphics.DrawString(date?.ToString("M/d") ?? "未排期", smallFont, mutedBrush,
+            new RectangleF(bounds.Left, bounds.Top + Scale(7, dpi),
+                bounds.Width - Scale(11, dpi), Scale(17, dpi)), right);
+        DrawIssueTitle(graphics, issue, taskBoldFont, primaryBrush,
+            new RectangleF(bounds.Left + Scale(11, dpi), bounds.Top + Scale(27, dpi),
+                bounds.Width - Scale(165, dpi), Scale(20, dpi)), dpi,
+            animationMilliseconds);
+        var metadata = $"{issue.Priority} · {ShortStatus(issue.Status)}";
+        graphics.DrawString(metadata, smallFont, secondaryBrush,
+            new RectangleF(bounds.Right - Scale(155, dpi), bounds.Top + Scale(29, dpi),
+                Scale(144, dpi), Scale(18, dpi)), right);
+    }
+
+    internal static string FormatDayStatus(IssueItem issue, DateOnly date, DateOnly today)
+    {
+        if (issue.Stage == WorkStage.FollowUp)
+        {
+            return ShortStatus(issue.Status);
+        }
+
+        if (date == today)
+        {
+            return "今日重点";
+        }
+
+        return date > today ? "计划开发" : ShortStatus(issue.Status);
+    }
+
+    private static void DrawIssueTitle(
+        Graphics graphics,
+        IssueItem issue,
+        Font font,
+        Brush brush,
+        RectangleF bounds,
+        int dpi,
+        long animationMilliseconds)
+    {
+        using var format = new StringFormat(StringFormat.GenericTypographic)
+        {
+            FormatFlags = StringFormatFlags.NoWrap,
+            Trimming = StringTrimming.None
+        };
+        var keyText = issue.Key + "  ";
+        var keyWidth = Math.Min(bounds.Width,
+            graphics.MeasureString(keyText, font, int.MaxValue, format).Width);
+        graphics.DrawString(keyText, font, brush,
+            new PointF(bounds.Left, bounds.Top), format);
+
+        var titleBounds = new RectangleF(bounds.Left + keyWidth, bounds.Top,
+            Math.Max(0, bounds.Width - keyWidth), bounds.Height);
+        if (titleBounds.Width < Scale(16, dpi))
+        {
+            return;
+        }
+
+        var title = issue.DisplayTitle;
+        var titleWidth = graphics.MeasureString(title, font, int.MaxValue, format).Width;
+        var offset = CalculateMarqueeOffset(titleWidth, titleBounds.Width,
+            animationMilliseconds, ScaleF(34F, dpi));
+        var state = graphics.Save();
+        graphics.SetClip(titleBounds);
+        graphics.DrawString(title, font, brush,
+            new PointF(titleBounds.Left - offset, titleBounds.Top), format);
+        graphics.Restore(state);
+    }
+
+    internal static float CalculateMarqueeOffset(
+        float contentWidth,
+        float viewportWidth,
+        long elapsedMilliseconds,
+        float pixelsPerSecond = 34F)
+    {
+        var overflow = Math.Max(0, contentWidth - viewportWidth);
+        if (overflow <= 0 || pixelsPerSecond <= 0)
+        {
+            return 0;
+        }
+
+        const double startPauseMilliseconds = 1400;
+        const double endPauseMilliseconds = 1100;
+        var travelMilliseconds = overflow / pixelsPerSecond * 1000D;
+        var cycleMilliseconds = startPauseMilliseconds + travelMilliseconds +
+                                endPauseMilliseconds + travelMilliseconds;
+        var phase = Math.Max(0, elapsedMilliseconds) % cycleMilliseconds;
+        if (phase < startPauseMilliseconds)
+        {
+            return 0;
+        }
+
+        phase -= startPauseMilliseconds;
+        if (phase < travelMilliseconds)
+        {
+            return (float)(overflow * phase / travelMilliseconds);
+        }
+
+        phase -= travelMilliseconds;
+        if (phase < endPauseMilliseconds)
+        {
+            return overflow;
+        }
+
+        phase -= endPauseMilliseconds;
+        return (float)(overflow * (1D - phase / travelMilliseconds));
+    }
+
+    internal static string ShortStatus(string status)
+    {
+        if (status.Contains("待策划验收", StringComparison.OrdinalIgnoreCase))
+        {
+            return "待策划验收";
+        }
+
+        if (status.Contains("待性能验收", StringComparison.OrdinalIgnoreCase))
+        {
+            return "待性能验收";
+        }
+
+        if (status.Contains("待验收", StringComparison.OrdinalIgnoreCase))
+        {
+            return "待验收";
+        }
+
+        if (status.Contains("待测试", StringComparison.OrdinalIgnoreCase))
+        {
+            return "待测试";
+        }
+
+        if (status.Contains("待开发", StringComparison.OrdinalIgnoreCase))
+        {
+            return "待开发";
+        }
+
+        if (status.Contains("测试完成", StringComparison.OrdinalIgnoreCase))
+        {
+            return "测试完成";
+        }
+
+        return status.Length <= 8 ? status : status[..8] + "…";
+    }
+
+    private static Color PriorityColor(string priority) => priority switch
+    {
+        "S" => Red,
+        "A" => Orange,
+        "B" => Purple,
+        "C" => Blue,
+        _ => MutedText
+    };
+
+    private static void FillRoundedRectangle(
+        Graphics graphics,
+        Rectangle rectangle,
+        int radius,
+        Color color)
+    {
+        using var path = RoundedRectangle(rectangle, radius);
+        using var brush = new SolidBrush(color);
+        graphics.FillPath(brush, path);
+    }
+
+    private static GraphicsPath RoundedRectangle(Rectangle rectangle, int radius)
+    {
+        var safeRadius = Math.Max(1, Math.Min(radius,
+            Math.Min(rectangle.Width, rectangle.Height) / 2));
+        var diameter = safeRadius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(rectangle.Left, rectangle.Top, diameter, diameter, 180, 90);
+        path.AddArc(rectangle.Right - diameter, rectangle.Top, diameter, diameter, 270, 90);
+        path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(rectangle.Left, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private static Font Font(float size, FontStyle style, int dpi) =>
+        new("Microsoft YaHei UI", size * dpi / 96F, style, GraphicsUnit.Point);
+
+    private static int Scale(int value, int dpi) =>
+        (int)Math.Round(value * dpi / 96F, MidpointRounding.AwayFromZero);
+
+    private static float ScaleF(float value, int dpi) => value * dpi / 96F;
+}

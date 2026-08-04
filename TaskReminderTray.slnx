@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="TaskReminderTray/TaskReminderTray.csproj" />
+  <Project Path="TaskReminderTray.Tests/TaskReminderTray.Tests.csproj" />
+</Solution>

@@ -1,0 +1,477 @@
+using System.Diagnostics;
+using TaskReminderTray.Models;
+using TaskReminderTray.Services;
+using UsageTray;
+using UsageTray.Services;
+
+namespace TaskReminderTray;
+
+internal sealed class TrayApplicationContext : ApplicationContext
+{
+    private readonly SettingsStore _settingsStore = new();
+    private readonly PlaneIssueClient _client = new();
+    private readonly UpdateService _updateService = new();
+    private readonly IssueSnapshotStore _snapshotStore = new();
+    private readonly NotificationStore _notificationStore = new();
+    private readonly ReminderEvaluator _reminderEvaluator = new();
+    private readonly PersistentNotificationForm _notificationForm = new();
+    private readonly NotifyIcon _notifyIcon;
+    private readonly TaskbarToolbarForm _toolbar;
+    private readonly ContextMenuStrip _menu;
+    private readonly ContextMenuDismissController _dismissController;
+    private readonly System.Windows.Forms.Timer _refreshTimer = new();
+    private readonly System.Windows.Forms.Timer _updateTimer = new();
+    private readonly System.Windows.Forms.Timer _balloonVisibilityTimer = new()
+    {
+        Interval = 7000
+    };
+    private readonly ToolStripMenuItem _summaryItem = new("等待读取") { Enabled = false };
+    private readonly ToolStripMenuItem _dueItem = new("临期：--") { Enabled = false };
+    private readonly ToolStripMenuItem _updatedItem = new("最后更新：--") { Enabled = false };
+    private readonly ToolStripMenuItem _refreshItem = new("立即刷新");
+    private readonly ToolStripMenuItem _versionItem = new() { Enabled = false };
+    private readonly ToolStripMenuItem _updateItem = new("检查更新…");
+    private AppSettings _settings;
+    private Icon? _currentIcon;
+    private bool _refreshing;
+    private bool _checkingUpdate;
+    private bool _showingUpdatePrompt;
+    private bool _installingUpdate;
+    private string? _lastError;
+    private IReadOnlyList<IssueItem> _lastIssues = [];
+    private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
+    private UpdateRelease? _availableUpdate;
+
+    public TrayApplicationContext()
+    {
+        _settings = _settingsStore.Load(out var warning);
+
+        _menu = new ContextMenuStrip();
+        _menu.Items.Add(_summaryItem);
+        _menu.Items.Add(_dueItem);
+        _menu.Items.Add(_updatedItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(_refreshItem);
+        _menu.Items.Add("打开任务页面", null, (_, _) => OpenSourcePage());
+        _menu.Items.Add("设置…", null, (_, _) => ShowSettings());
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(_versionItem);
+        _menu.Items.Add(_updateItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("退出", null, (_, _) => ExitThread());
+        _dismissController = new ContextMenuDismissController(_menu);
+        _refreshItem.Click += async (_, _) => await RefreshAsync(showSuccess: true);
+        _refreshTimer.Tick += async (_, _) => await RefreshAsync(showSuccess: false);
+        _updateItem.Click += async (_, _) => await UpdateMenuItem_ClickAsync();
+        _updateTimer.Interval = checked(6 * 60 * 60 * 1000);
+        _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(notifyWhenCurrent: false);
+        _versionItem.Text = $"当前版本：v{UpdateService.CurrentVersion.ToString(3)}";
+
+        _notifyIcon = new NotifyIcon
+        {
+            Visible = false,
+            ContextMenuStrip = _menu,
+            Text = "TaskReminderTray - 等待配置"
+        };
+        _notifyIcon.DoubleClick += (_, _) => ShowSettings();
+        UpdateIcon(null, TrayIconState.Loading);
+
+        _toolbar = new TaskbarToolbarForm(_menu, avoidProcessName: "UsageTray");
+        _toolbar.RefreshRequested += async (_, _) => await RefreshAsync(showSuccess: false);
+        _toolbar.SettingsRequested += (_, _) => ShowSettings();
+        _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
+        _notificationForm.AcknowledgeRequested += (_, notificationId) =>
+            AcknowledgeNotification(notificationId);
+        _balloonVisibilityTimer.Tick += (_, _) =>
+        {
+            _balloonVisibilityTimer.Stop();
+            if (_toolbar.IsAttached)
+            {
+                _notifyIcon.Visible = false;
+            }
+        };
+        _toolbar.SetDisplay("待配置",
+            HoverCardContent.CreateStatus("待配置", "请配置任务地址与登录信息。",
+                Color.FromArgb(124, 132, 145)),
+            Color.FromArgb(124, 132, 145));
+        _toolbar.SetHoverEnabled(_settings.IsConfigured);
+        _toolbar.Show();
+        _notifyIcon.Visible = !_toolbar.IsAttached;
+
+        ConfigureTimer();
+        _updateTimer.Start();
+        _ = CheckForUpdatesAfterStartupAsync();
+        if (!string.IsNullOrWhiteSpace(warning))
+        {
+            ShowBalloon("配置读取失败", warning, ToolTipIcon.Warning);
+        }
+
+        if (_settings.IsConfigured)
+        {
+            _ = RefreshAsync(showSuccess: false);
+        }
+
+        _pendingNotifications = _notificationStore.LoadPending();
+        ShowPendingNotification();
+    }
+
+    private async Task RefreshAsync(bool showSuccess)
+    {
+        if (_refreshing || !_settings.IsConfigured)
+        {
+            return;
+        }
+
+        _refreshing = true;
+        _refreshItem.Enabled = false;
+        _toolbar.SetHoverEnabled(true);
+        try
+        {
+            _toolbar.SetDisplay("刷新中…",
+                HoverCardContent.CreateStatus("刷新中…", "正在读取我的任务与 Bug。",
+                    Color.FromArgb(69, 139, 226)),
+                Color.FromArgb(69, 139, 226));
+            UpdateIcon(null, TrayIconState.Loading);
+            var issues = await _client.GetIssuesAsync(_settings);
+            ApplyIssues(issues);
+            NotifyChanges(issues);
+            _lastIssues = issues;
+            _lastError = null;
+            if (showSuccess)
+            {
+                ShowBalloon("刷新成功", $"读取到 {issues.Count} 个工作项。", ToolTipIcon.Info);
+            }
+        }
+        catch (Exception exception)
+        {
+            ApplyError(exception.Message);
+        }
+        finally
+        {
+            _refreshing = false;
+            _refreshItem.Enabled = true;
+        }
+    }
+
+    private void ApplyIssues(IReadOnlyList<IssueItem> issues)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var summary = ScheduleSummary.Create(issues, today, _settings.DueSoonDays);
+        _summaryItem.Text = $"当前：开发 {summary.DevelopmentCount} · 跟进 {summary.FollowUpCount}";
+        _dueItem.Text = $"等待输入 {summary.WaitingCount} · Bug {summary.BugCount}";
+        _updatedItem.Text = $"最后更新：{DateTime.Now:yyyy-MM-dd HH:mm:ss}";
+        var developmentOverdue = summary.DevelopmentIssues.Count(issue =>
+            issue.DueDate is { } due && due < today);
+        var color = developmentOverdue > 0
+            ? Color.FromArgb(211, 66, 76)
+            : summary.DueSoonCount > 0
+                ? Color.FromArgb(230, 148, 48)
+                : Color.FromArgb(61, 177, 103);
+        var display = summary.CurrentFocus is { } focus
+            ? $"{focus.Key} · 后续 {Math.Max(0, summary.DevelopmentCount - 1)}"
+            : "暂无开发任务";
+        if (developmentOverdue > 0)
+        {
+            display += $" · 逾{developmentOverdue}";
+        }
+
+        _toolbar.SetDisplay(display,
+            HoverCardContent.CreateSchedule(summary, today, DateTime.Now, color), color);
+        SetTooltip($"TaskReminderTray - {display}");
+        UpdateIcon(summary.TotalCount,
+            developmentOverdue > 0 || summary.DueSoonCount > 0
+                ? TrayIconState.Warning
+                : TrayIconState.Healthy);
+    }
+
+    private void NotifyChanges(IReadOnlyList<IssueItem> issues)
+    {
+        var changes = _snapshotStore.CompareAndSave(issues);
+        if (changes.Count > 0)
+        {
+            _pendingNotifications = _notificationStore.AddChanges(changes);
+            ShowPendingNotification();
+        }
+
+        var due = _reminderEvaluator.GetDueReminders(issues,
+            DateOnly.FromDateTime(DateTime.Now), _settings.DueSoonDays);
+        if (due.Count > 0)
+        {
+            var first = due.OrderBy(issue => issue.DueDate).First();
+            var dateText = first.DueDate < DateOnly.FromDateTime(DateTime.Now)
+                ? $"已逾期 {DateOnly.FromDateTime(DateTime.Now).DayNumber - first.DueDate!.Value.DayNumber} 天"
+                : first.DueDate == DateOnly.FromDateTime(DateTime.Now)
+                    ? "今天到期"
+                    : $"{first.DueDate:MM-dd} 到期";
+            var extra = due.Count > 1 ? $"，另有 {due.Count - 1} 项" : string.Empty;
+            ShowBalloon("任务到期提醒", $"{first.Key} {first.Title}\n{dateText}{extra}",
+                ToolTipIcon.Warning);
+        }
+    }
+
+    private void ApplyError(string message)
+    {
+        _summaryItem.Text = "读取失败";
+        _updatedItem.Text = $"最后尝试：{DateTime.Now:yyyy-MM-dd HH:mm:ss}";
+        _toolbar.SetDisplay("读取失败",
+            HoverCardContent.CreateStatus("读取失败", message,
+                Color.FromArgb(211, 66, 76), $"最后尝试 {DateTime.Now:HH:mm:ss}"),
+            Color.FromArgb(211, 66, 76));
+        UpdateIcon(null, TrayIconState.Error);
+        SetTooltip("TaskReminderTray - 读取失败");
+        if (!string.Equals(_lastError, message, StringComparison.Ordinal))
+        {
+            _lastError = message;
+            ShowBalloon("任务读取失败", message, ToolTipIcon.Error);
+        }
+    }
+
+    private void AcknowledgeNotification(string notificationId)
+    {
+        try
+        {
+            _pendingNotifications = _notificationStore.Acknowledge(notificationId);
+            ShowPendingNotification();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show($"无法清除这条通知：{exception.Message}", "任务提醒",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowPendingNotification()
+    {
+        if (_pendingNotifications.Count == 0)
+        {
+            _notificationForm.HideNotification();
+            return;
+        }
+
+        _notificationForm.ShowNotification(_pendingNotifications[0],
+            _pendingNotifications.Count);
+    }
+
+    private void ShowSettings()
+    {
+        using var form = new SettingsForm(_settings.Clone());
+        if (form.ShowDialog() != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            StartupManager.SetEnabled(form.Result.StartWithWindows);
+            _settingsStore.Save(form.Result);
+            _settings = form.Result;
+            ConfigureTimer();
+            _ = RefreshAsync(showSuccess: true);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show($"保存配置失败：{exception.Message}", "任务提醒",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ConfigureTimer()
+    {
+        _refreshTimer.Stop();
+        _refreshTimer.Interval = checked(Math.Clamp(_settings.RefreshMinutes, 1, 1440) * 60 * 1000);
+        if (_settings.IsConfigured)
+        {
+            _refreshTimer.Start();
+        }
+    }
+
+    private void OpenSourcePage()
+    {
+        if (!Uri.TryCreate(_settings.SourceUrl, UriKind.Absolute, out var uri))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
+    }
+
+    private async Task CheckForUpdatesAfterStartupAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(12));
+        await CheckForUpdatesAsync(notifyWhenCurrent: false);
+    }
+
+    private async Task CheckForUpdatesAsync(bool notifyWhenCurrent)
+    {
+        if (_checkingUpdate || _installingUpdate)
+        {
+            return;
+        }
+
+        _checkingUpdate = true;
+        _updateItem.Enabled = false;
+        SetUpdateBusyState("更新中：正在检查…");
+        try
+        {
+            var release = await _updateService.CheckAsync();
+            if (release is not null)
+            {
+                _availableUpdate = release;
+                _updateItem.Text = $"发现新版本 v{release.Version.ToString(3)}（点击更新）";
+                _updateItem.Enabled = true;
+                ShowBalloon("TaskReminderTray 有新版本",
+                    $"v{release.Version.ToString(3)} 已发布。右键工具条并选择更新。",
+                    ToolTipIcon.Info);
+                return;
+            }
+
+            _availableUpdate = null;
+            _updateItem.Text = "检查更新…";
+            if (notifyWhenCurrent)
+            {
+                MessageBox.Show($"当前已是最新版本 v{UpdateService.CurrentVersion.ToString(3)}。",
+                    "TaskReminderTray 更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception exception)
+        {
+            _updateItem.Text = "检查更新失败（点击重试）";
+            if (notifyWhenCurrent)
+            {
+                MessageBox.Show($"检查更新失败。\n\n{exception.Message}",
+                    "TaskReminderTray 更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        finally
+        {
+            _checkingUpdate = false;
+            if (!_installingUpdate)
+            {
+                _updateItem.Enabled = true;
+            }
+        }
+    }
+
+    private async Task UpdateMenuItem_ClickAsync()
+    {
+        if (_showingUpdatePrompt || _installingUpdate)
+        {
+            return;
+        }
+
+        if (_availableUpdate is null)
+        {
+            await CheckForUpdatesAsync(notifyWhenCurrent: true);
+            return;
+        }
+
+        _showingUpdatePrompt = true;
+        _updateItem.Enabled = false;
+        try
+        {
+            var release = _availableUpdate;
+            using var prompt = new UpdatePromptForm(release);
+            if (prompt.ShowDialog() == DialogResult.Yes)
+            {
+                await InstallUpdateAsync(release);
+            }
+        }
+        finally
+        {
+            _showingUpdatePrompt = false;
+            if (!_installingUpdate)
+            {
+                _updateItem.Enabled = true;
+            }
+        }
+    }
+
+    private async Task InstallUpdateAsync(UpdateRelease release)
+    {
+        _installingUpdate = true;
+        SetUpdateBusyState("更新中：准备下载…");
+        try
+        {
+            var progress = new Progress<UpdateProgress>(value =>
+                SetUpdateBusyState(FormatUpdateProgress(value)));
+            var downloaded = await _updateService.DownloadAndVerifyAsync(release, progress);
+            SetUpdateBusyState("更新中：正在安装并重启…");
+            UpdateInstaller.Launch(downloaded.ExecutablePath, downloaded.Sha256);
+            ExitThread();
+        }
+        catch (Exception exception)
+        {
+            _installingUpdate = false;
+            _updateItem.Enabled = true;
+            _updateItem.Text = $"更新 v{release.Version.ToString(3)}（点击重试）";
+            MessageBox.Show($"更新失败，当前版本未被替换。\n\n{exception.Message}",
+                "TaskReminderTray 更新", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void SetUpdateBusyState(string text)
+    {
+        _updateItem.Text = text;
+        _updateItem.Enabled = false;
+    }
+
+    private static string FormatUpdateProgress(UpdateProgress progress) => progress.Stage switch
+    {
+        UpdateProgressStage.Preparing => "更新中：准备下载…",
+        UpdateProgressStage.Downloading when progress.Percentage is not null =>
+            $"更新中：下载 {progress.Percentage.Value}%",
+        UpdateProgressStage.Downloading => "更新中：正在下载…",
+        UpdateProgressStage.Verifying => "更新中：正在校验…",
+        _ => "更新中…"
+    };
+
+    private void UpdateIcon(int? count, TrayIconState state)
+    {
+        var next = TrayIconRenderer.Create(count, state);
+        _notifyIcon.Icon = next;
+        _currentIcon?.Dispose();
+        _currentIcon = next;
+    }
+
+    private void SetTooltip(string text) =>
+        _notifyIcon.Text = text.Length <= 63 ? text : text[..62] + "…";
+
+    private void ShowBalloon(string title, string text, ToolTipIcon icon)
+    {
+        // NotifyIcon 隐藏时 Windows 不显示气泡。嵌入式工具条工作期间仅在
+        // 通知所需的几秒内注册图标，之后自动隐藏，避免长期出现重复入口。
+        if (!_notifyIcon.Visible)
+        {
+            _notifyIcon.Visible = true;
+            _balloonVisibilityTimer.Stop();
+            _balloonVisibilityTimer.Start();
+        }
+
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = text.Length <= 240 ? text : text[..239] + "…";
+        _notifyIcon.BalloonTipIcon = icon;
+        _notifyIcon.ShowBalloonTip(5000);
+    }
+
+    protected override void ExitThreadCore()
+    {
+        _refreshTimer.Stop();
+        _refreshTimer.Dispose();
+        _updateTimer.Stop();
+        _updateTimer.Dispose();
+        _balloonVisibilityTimer.Stop();
+        _balloonVisibilityTimer.Dispose();
+        _dismissController.Dispose();
+        _notificationForm.Shutdown();
+        _notificationForm.Dispose();
+        _toolbar.Close();
+        _toolbar.Dispose();
+        _notifyIcon.Visible = false;
+        _notifyIcon.Dispose();
+        _currentIcon?.Dispose();
+        _client.Dispose();
+        _updateService.Dispose();
+        _menu.Dispose();
+        base.ExitThreadCore();
+    }
+}
