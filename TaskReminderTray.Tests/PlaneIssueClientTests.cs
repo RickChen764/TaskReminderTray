@@ -293,6 +293,48 @@ public sealed class PlaneIssueClientTests
         }
     }
 
+    [Fact]
+    public void PersonalWorkStore_PersistsFocusReminderAndFormatsIssueInformation()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"task-reminder-personal-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "personal.json");
+        try
+        {
+            var store = new PersonalWorkStore(path);
+            var today = new DateOnly(2026, 8, 4);
+            var issue = Issue("focus", IssueKind.Bug, today) with
+            {
+                Key = "SJ-816",
+                Title = "图集查找预制引用功能编写",
+                SourceUrl = "https://plane.example.com/issues/focus",
+                Priority = "A"
+            };
+            var remindAt = DateTimeOffset.Parse("2026-08-04T17:30:00+08:00");
+
+            store.SetFocus(issue.Id);
+            var state = store.AddReminder(issue, remindAt);
+            var reloaded = new PersonalWorkStore(path).Load();
+            var information = PersonalWorkStore.FormatIssueInformation(issue);
+
+            Assert.Equal(issue.Id, reloaded.FocusIssueId);
+            Assert.Single(state.Reminders);
+            Assert.Equal(remindAt, reloaded.Reminders[0].RemindAt);
+            Assert.Contains("SJ-816 图集查找预制引用功能编写", information);
+            Assert.Contains("类型：Bug", information);
+            Assert.Contains(issue.SourceUrl, information);
+
+            Assert.Empty(store.RemoveReminder(reloaded.Reminders[0].Id).Reminders);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     private static IssueItem Issue(
         string id,
         IssueKind kind,

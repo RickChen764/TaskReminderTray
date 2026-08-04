@@ -13,15 +13,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly UpdateService _updateService = new();
     private readonly IssueSnapshotStore _snapshotStore = new();
     private readonly NotificationStore _notificationStore = new();
+    private readonly PersonalWorkStore _personalWorkStore = new();
     private readonly ReminderEvaluator _reminderEvaluator = new();
     private readonly PersistentNotificationForm _notificationForm = new();
     private readonly ScheduleDetailsForm _detailsForm = new();
+    private readonly SnoozedReminderForm _snoozedReminderForm = new();
     private readonly NotifyIcon _notifyIcon;
     private readonly TaskbarToolbarForm _toolbar;
     private readonly ContextMenuStrip _menu;
     private readonly ContextMenuDismissController _dismissController;
     private readonly System.Windows.Forms.Timer _refreshTimer = new();
     private readonly System.Windows.Forms.Timer _updateTimer = new();
+    private readonly System.Windows.Forms.Timer _personalReminderTimer = new() { Interval = 15000 };
     private readonly System.Windows.Forms.Timer _balloonVisibilityTimer = new()
     {
         Interval = 7000
@@ -43,10 +46,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
     private UpdateRelease? _availableUpdate;
     private HoverCardContent? _detailsContent;
+    private PersonalWorkState _personalWorkState;
 
     public TrayApplicationContext()
     {
         _settings = _settingsStore.Load(out var warning);
+        _personalWorkState = _personalWorkStore.Load();
 
         _menu = new ContextMenuStrip();
         _menu.Items.Add(_summaryItem);
@@ -84,6 +89,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
         _notificationForm.AcknowledgeRequested += (_, notificationId) =>
             AcknowledgeNotification(notificationId);
+        _detailsForm.FocusChanged += SetFocusIssue;
+        _detailsForm.SnoozeRequested += AddSnoozedReminder;
+        _snoozedReminderForm.AcknowledgeRequested += AcknowledgeSnoozedReminder;
+        _snoozedReminderForm.RescheduleRequested += RescheduleSnoozedReminder;
+        _personalReminderTimer.Tick += (_, _) => ShowDuePersonalReminder();
         _balloonVisibilityTimer.Tick += (_, _) =>
         {
             _balloonVisibilityTimer.Stop();
@@ -102,6 +112,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         ConfigureTimer();
         _updateTimer.Start();
+        _personalReminderTimer.Start();
         _ = CheckForUpdatesAfterStartupAsync();
         if (!string.IsNullOrWhiteSpace(warning))
         {
@@ -115,6 +126,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _pendingNotifications = _notificationStore.LoadPending();
         ShowPendingNotification();
+        ShowDuePersonalReminder();
     }
 
     private async Task RefreshAsync(bool showSuccess)
@@ -153,6 +165,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
         var summary = ScheduleSummary.Create(issues, today, _settings.DueSoonDays);
+        var focusIssue = issues.FirstOrDefault(issue =>
+            !issue.IsCompleted && string.Equals(issue.Id, _personalWorkState.FocusIssueId,
+                StringComparison.OrdinalIgnoreCase));
+        if (_personalWorkState.FocusIssueId is not null && focusIssue is null)
+        {
+            _personalWorkState = _personalWorkStore.SetFocus(null);
+        }
         _summaryItem.Text = $"当前：开发 {summary.DevelopmentCount} · 跟进 {summary.FollowUpCount}";
         _dueItem.Text = $"等待输入 {summary.WaitingCount} · Bug {summary.BugCount}";
         _updatedItem.Text = $"最后更新：{DateTime.Now:yyyy-MM-dd HH:mm:ss}";
@@ -163,7 +182,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             : summary.DueSoonCount > 0
                 ? Color.FromArgb(230, 148, 48)
                 : Color.FromArgb(61, 177, 103);
-        var display = summary.CurrentFocus is { } focus
+        var display = focusIssue is not null
+            ? $"重点 {focusIssue.Key} · 后续 {Math.Max(0, summary.DevelopmentCount - 1)}"
+            : summary.CurrentFocus is { } focus
             ? $"{focus.Key} · 后续 {Math.Max(0, summary.DevelopmentCount - 1)}"
             : "暂无开发任务";
         if (developmentOverdue > 0)
@@ -171,7 +192,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             display += $" · 逾{developmentOverdue}";
         }
 
+        var expandedDates = _detailsContent?.ExpandedDates.ToArray() ?? [];
         _detailsContent = HoverCardContent.CreateSchedule(summary, today, DateTime.Now, color);
+        _detailsContent.ExpandedDates.UnionWith(expandedDates);
+        _detailsContent.FocusIssueId = _personalWorkState.FocusIssueId;
         _toolbar.SetDisplay(display, _detailsContent, color);
         _detailsForm.SetContent(_detailsContent);
         SetTooltip($"TaskReminderTray - {display}");
@@ -230,6 +254,59 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _detailsForm.Toggle(_toolbar.GetScreenBounds());
+    }
+
+    private void SetFocusIssue(IssueItem? issue)
+    {
+        _personalWorkState = _personalWorkStore.SetFocus(issue?.Id);
+        if (_detailsContent is not null)
+        {
+            _detailsContent.FocusIssueId = _personalWorkState.FocusIssueId;
+        }
+
+        if (_lastIssues.Count > 0)
+        {
+            ApplyIssues(_lastIssues);
+        }
+        else if (_detailsContent is not null)
+        {
+            _detailsForm.SetContent(_detailsContent);
+        }
+    }
+
+    private void AddSnoozedReminder(IssueItem issue, DateTimeOffset remindAt)
+    {
+        _personalWorkState = _personalWorkStore.AddReminder(issue, remindAt);
+        ShowBalloon("已设置稍后提醒",
+            $"{issue.Key} {issue.DisplayTitle}\n{remindAt.LocalDateTime:MM-dd HH:mm} 提醒",
+            ToolTipIcon.Info);
+    }
+
+    private void AcknowledgeSnoozedReminder(string reminderId)
+    {
+        _personalWorkState = _personalWorkStore.RemoveReminder(reminderId);
+        ShowDuePersonalReminder();
+    }
+
+    private void RescheduleSnoozedReminder(string reminderId, DateTimeOffset remindAt)
+    {
+        _personalWorkState = _personalWorkStore.RescheduleReminder(reminderId, remindAt);
+        ShowDuePersonalReminder();
+    }
+
+    private void ShowDuePersonalReminder()
+    {
+        var due = _personalWorkState.Reminders
+            .Where(reminder => reminder.RemindAt <= DateTimeOffset.Now)
+            .OrderBy(reminder => reminder.RemindAt)
+            .ToArray();
+        if (due.Length == 0)
+        {
+            _snoozedReminderForm.HideReminder();
+            return;
+        }
+
+        _snoozedReminderForm.ShowReminder(due[0], due.Length);
     }
 
     private void AcknowledgeNotification(string notificationId)
@@ -465,6 +542,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _refreshTimer.Dispose();
         _updateTimer.Stop();
         _updateTimer.Dispose();
+        _personalReminderTimer.Stop();
+        _personalReminderTimer.Dispose();
         _balloonVisibilityTimer.Stop();
         _balloonVisibilityTimer.Dispose();
         _dismissController.Dispose();
@@ -472,6 +551,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notificationForm.Dispose();
         _detailsForm.Shutdown();
         _detailsForm.Dispose();
+        _snoozedReminderForm.Shutdown();
+        _snoozedReminderForm.Dispose();
         _toolbar.Close();
         _toolbar.Dispose();
         _notifyIcon.Visible = false;

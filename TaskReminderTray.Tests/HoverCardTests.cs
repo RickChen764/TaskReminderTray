@@ -70,4 +70,35 @@ public sealed class HoverCardTests
         Assert.InRange(midway, 99F, 100F);
         Assert.Equal(100F, atEndPause);
     }
+
+    [Fact]
+    public void ScheduleCard_ExpandingDayIncreasesHeightAndMapsEveryIssue()
+    {
+        var today = new DateOnly(2026, 8, 4);
+        var issues = new[]
+        {
+            new IssueItem("1", "SJ-1", "第一个任务", IssueKind.Task,
+                "进行中", "started", today, today, null, "SJ", false,
+                "https://plane.example.com/issues/1"),
+            new IssueItem("2", "SJ-2", "第二个任务", IssueKind.Task,
+                "待开发", "unstarted", today, today, null, "SJ", false,
+                "https://plane.example.com/issues/2")
+        };
+        var summary = ScheduleSummary.Create(issues, today, 2);
+        var content = HoverCardContent.CreateSchedule(summary, today, DateTime.Now, Color.Green);
+        var collapsed = UsageHoverCardRenderer.Measure(content, 96);
+        content.ExpandedDates.Add(today);
+        var expanded = UsageHoverCardRenderer.Measure(content, 96);
+        var map = new ScheduleInteractionMap();
+        using var bitmap = new Bitmap(expanded.Width, expanded.Height);
+        using var graphics = Graphics.FromImage(bitmap);
+
+        UsageHoverCardRenderer.Draw(graphics,
+            new Rectangle(Point.Empty, expanded), 96, content, map);
+
+        Assert.True(expanded.Height > collapsed.Height);
+        Assert.Contains(map.Expanders, region => region.Date == today && region.IsExpanded);
+        Assert.Contains(map.Issues, region => region.Issue.Id == "1");
+        Assert.Contains(map.Issues, region => region.Issue.Id == "2");
+    }
 }

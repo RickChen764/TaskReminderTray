@@ -1,4 +1,7 @@
 using System.Drawing.Drawing2D;
+using System.Diagnostics;
+using TaskReminderTray.Models;
+using TaskReminderTray.Services;
 using UsageTray;
 
 namespace TaskReminderTray;
@@ -13,6 +16,9 @@ internal sealed class ScheduleDetailsForm : Form
     private bool _allowDeactivateClose = true;
     private Rectangle _anchorBounds;
 
+    public event Action<IssueItem?>? FocusChanged;
+    public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
+
     public ScheduleDetailsForm()
     {
         Text = "TaskReminderTray 详情";
@@ -25,6 +31,19 @@ internal sealed class ScheduleDetailsForm : Form
         BackColor = Color.FromArgb(24, 27, 33);
         Controls.Add(_surface);
         _surface.Dock = DockStyle.Fill;
+        _surface.LayoutChanged += ResizeForContent;
+        _surface.FocusChanged += issue => FocusChanged?.Invoke(issue);
+        _surface.SnoozeRequested += (issue, remindAt) =>
+            SnoozeRequested?.Invoke(issue, remindAt);
+        _surface.MenuOpening += () => _allowDeactivateClose = false;
+        _surface.MenuClosed += () =>
+        {
+            _allowDeactivateClose = true;
+            if (!ContainsFocus && !Bounds.Contains(Cursor.Position))
+            {
+                Hide();
+            }
+        };
         Deactivate += (_, _) =>
         {
             // 点击工具条本身时先不要因失焦关闭，让随后到达的工具条点击事件
@@ -46,8 +65,22 @@ internal sealed class ScheduleDetailsForm : Form
     public void SetContent(HoverCardContent content)
     {
         _surface.Content = content;
-        var size = UsageHoverCardRenderer.Measure(content, DeviceDpi);
+        ResizeForContent();
+    }
+
+    private void ResizeForContent()
+    {
+        if (_surface.Content is null)
+        {
+            return;
+        }
+
+        var size = UsageHoverCardRenderer.Measure(_surface.Content, DeviceDpi);
         ClientSize = size;
+        if (Visible && !_anchorBounds.IsEmpty)
+        {
+            PositionNear(_anchorBounds);
+        }
         _surface.Invalidate();
     }
 
@@ -137,7 +170,25 @@ internal sealed class ScheduleDetailsForm : Form
     private sealed class DetailsSurface : Control
     {
         private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 50 };
+        private readonly ScheduleInteractionMap _interactions = new();
+        private readonly ToolTip _toolTip = new()
+        {
+            InitialDelay = 250,
+            ReshowDelay = 100,
+            AutoPopDelay = 1800,
+            ShowAlways = true
+        };
+        private readonly ContextMenuStrip _issueMenu = new();
         private HoverCardContent? _content;
+        private IssueItem? _menuIssue;
+        private string? _hoveredIssueId;
+        private bool _hoveringCopy;
+
+        public event Action? LayoutChanged;
+        public event Action<IssueItem?>? FocusChanged;
+        public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
+        public event Action? MenuOpening;
+        public event Action? MenuClosed;
 
         public DetailsSurface()
         {
@@ -151,6 +202,164 @@ internal sealed class ScheduleDetailsForm : Form
                     Invalidate();
                 }
             };
+            BuildIssueMenu();
+            MouseMove += DetailsSurface_MouseMove;
+            MouseLeave += (_, _) => SetHoveredIssue(null, hoveringCopy: false);
+            MouseUp += DetailsSurface_MouseUp;
+        }
+
+        private void BuildIssueMenu()
+        {
+            _issueMenu.Items.Add("打开工单", null, (_, _) => OpenIssue(_menuIssue));
+            _issueMenu.Items.Add("复制单信息", null, (_, _) =>
+                CopyText(_menuIssue is null ? null :
+                    PersonalWorkStore.FormatIssueInformation(_menuIssue)));
+            _issueMenu.Items.Add("复制工单编号", null, (_, _) => CopyText(_menuIssue?.Key));
+            _issueMenu.Items.Add("复制工单标题", null, (_, _) => CopyText(_menuIssue?.Title));
+            _issueMenu.Items.Add(new ToolStripSeparator());
+            _issueMenu.Items.Add("设为当前重点", null, (_, _) => ToggleFocus());
+            var snooze = new ToolStripMenuItem("稍后提醒");
+            snooze.DropDownItems.Add("30 分钟后", null, (_, _) => Snooze(TimeSpan.FromMinutes(30)));
+            snooze.DropDownItems.Add("1 小时后", null, (_, _) => Snooze(TimeSpan.FromHours(1)));
+            snooze.DropDownItems.Add("今天下班前（17:30）", null, (_, _) =>
+                SnoozeAt(TodayAtOrTomorrow(17, 30)));
+            snooze.DropDownItems.Add("明天上午（09:00）", null, (_, _) =>
+                SnoozeAt(DateTime.Today.AddDays(1).AddHours(9)));
+            _issueMenu.Items.Add(snooze);
+            _issueMenu.Opening += (_, _) =>
+            {
+                MenuOpening?.Invoke();
+                var focusItem = _issueMenu.Items[5];
+                focusItem.Text = _menuIssue is not null &&
+                                 string.Equals(_menuIssue.Id, _content?.FocusIssueId,
+                                     StringComparison.OrdinalIgnoreCase)
+                    ? "取消当前重点"
+                    : "设为当前重点";
+            };
+            _issueMenu.Closed += (_, _) => MenuClosed?.Invoke();
+        }
+
+        private void DetailsSurface_MouseMove(object? sender, MouseEventArgs e)
+        {
+            var region = _interactions.Issues.LastOrDefault(item =>
+                item.Bounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
+            var hoveringCopy = region is not null && !region.CopyBounds.IsEmpty &&
+                               region.CopyBounds.Contains(e.Location);
+            SetHoveredIssue(region?.Issue.Id, hoveringCopy);
+            Cursor = region is not null ||
+                     _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location))
+                ? Cursors.Hand
+                : Cursors.Default;
+        }
+
+        private void SetHoveredIssue(string? issueId, bool hoveringCopy)
+        {
+            if (string.Equals(_hoveredIssueId, issueId, StringComparison.OrdinalIgnoreCase) &&
+                _hoveringCopy == hoveringCopy)
+            {
+                return;
+            }
+
+            _hoveredIssueId = issueId;
+            _hoveringCopy = hoveringCopy;
+            if (_content is not null)
+            {
+                _content.HoveredIssueId = issueId;
+            }
+            _toolTip.SetToolTip(this, hoveringCopy ? "复制单信息" : null);
+            Invalidate();
+        }
+
+        private void DetailsSurface_MouseUp(object? sender, MouseEventArgs e)
+        {
+            var issueRegion = _interactions.Issues.LastOrDefault(item =>
+                item.Bounds.Contains(e.Location) || item.CopyBounds.Contains(e.Location));
+            if (e.Button == MouseButtons.Right && issueRegion is not null)
+            {
+                _menuIssue = issueRegion.Issue;
+                _issueMenu.Show(this, e.Location);
+                return;
+            }
+
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            if (issueRegion is not null)
+            {
+                if (!issueRegion.CopyBounds.IsEmpty && issueRegion.CopyBounds.Contains(e.Location))
+                {
+                    CopyText(PersonalWorkStore.FormatIssueInformation(issueRegion.Issue));
+                    _toolTip.Show("已复制单信息", this, e.X, e.Y - 34, 1300);
+                }
+                else
+                {
+                    OpenIssue(issueRegion.Issue);
+                }
+                return;
+            }
+
+            var expander = _interactions.Expanders.LastOrDefault(item =>
+                item.Bounds.Contains(e.Location));
+            if (expander is null || _content is null)
+            {
+                return;
+            }
+
+            if (expander.IsExpanded)
+            {
+                _content.ExpandedDates.Remove(expander.Date);
+            }
+            else
+            {
+                _content.ExpandedDates.Add(expander.Date);
+            }
+            LayoutChanged?.Invoke();
+        }
+
+        private void ToggleFocus()
+        {
+            if (_menuIssue is null || _content is null)
+            {
+                return;
+            }
+
+            FocusChanged?.Invoke(string.Equals(_menuIssue.Id, _content.FocusIssueId,
+                StringComparison.OrdinalIgnoreCase) ? null : _menuIssue);
+        }
+
+        private void Snooze(TimeSpan delay) => SnoozeAt(DateTimeOffset.Now.Add(delay));
+
+        private void SnoozeAt(DateTimeOffset remindAt)
+        {
+            if (_menuIssue is not null)
+            {
+                SnoozeRequested?.Invoke(_menuIssue, remindAt);
+            }
+        }
+
+        private static DateTimeOffset TodayAtOrTomorrow(int hour, int minute)
+        {
+            var candidate = DateTime.Today.AddHours(hour).AddMinutes(minute);
+            return candidate > DateTime.Now ? candidate : candidate.AddDays(1);
+        }
+
+        private static void OpenIssue(IssueItem? issue)
+        {
+            if (issue is not null && Uri.TryCreate(issue.SourceUrl,
+                    UriKind.Absolute, out var uri))
+            {
+                Process.Start(new ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
+            }
+        }
+
+        private static void CopyText(string? text)
+        {
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                Clipboard.SetText(text);
+            }
         }
 
         public HoverCardContent? Content
@@ -176,7 +385,8 @@ internal sealed class ScheduleDetailsForm : Form
             base.OnPaint(e);
             if (_content is not null)
             {
-                UsageHoverCardRenderer.Draw(e.Graphics, ClientRectangle, DeviceDpi, _content);
+                UsageHoverCardRenderer.Draw(e.Graphics, ClientRectangle, DeviceDpi, _content,
+                    _interactions);
             }
         }
 
@@ -186,6 +396,8 @@ internal sealed class ScheduleDetailsForm : Form
             {
                 _animationTimer.Stop();
                 _animationTimer.Dispose();
+                _toolTip.Dispose();
+                _issueMenu.Dispose();
             }
             base.Dispose(disposing);
         }
