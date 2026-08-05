@@ -105,4 +105,15 @@ public sealed class SettingsStoreTests
             }
         }
     }
+
+    [Theory]
+    [InlineData(5, false, 5)]
+    [InlineData(5, true, 60)]
+    [InlineData(120, true, 60)]
+    public void RefreshIntervalPolicy_UsesOneHourDuringDoNotDisturb(
+        int configuredMinutes, bool doNotDisturbActive, int expectedMinutes)
+    {
+        Assert.Equal(expectedMinutes,
+            RefreshIntervalPolicy.GetMinutes(configuredMinutes, doNotDisturbActive));
+    }
 }

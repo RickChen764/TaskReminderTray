@@ -42,6 +42,16 @@ internal static class DoNotDisturbEvaluator
     }
 }
 
+internal static class RefreshIntervalPolicy
+{
+    public const int DoNotDisturbMinutes = 60;
+
+    public static int GetMinutes(int configuredMinutes, bool doNotDisturbActive) =>
+        doNotDisturbActive
+            ? DoNotDisturbMinutes
+            : Math.Clamp(configuredMinutes, 1, 1440);
+}
+
 internal sealed class AppSettings
 {
     public string SourceUrl { get; set; } = string.Empty;

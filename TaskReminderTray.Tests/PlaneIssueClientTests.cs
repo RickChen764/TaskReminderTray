@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using TaskReminderTray.Models;
 using TaskReminderTray.Services;
 using Xunit;
@@ -6,6 +8,36 @@ namespace TaskReminderTray.Tests;
 
 public sealed class PlaneIssueClientTests
 {
+    [Fact]
+    public async Task PasswordAuthentication_CachesTokenAcrossRefreshes()
+    {
+        var handler = new AuthenticationHandler();
+        using var client = new PlaneIssueClient(handler);
+        var settings = PasswordSettings();
+
+        await client.GetIssuesAsync(settings);
+        await client.GetIssuesAsync(settings);
+
+        Assert.Equal(1, handler.SignInCount);
+        Assert.Equal(2, handler.UserRequestCount);
+        Assert.All(handler.BearerTokens, token => Assert.Equal("token-1", token));
+    }
+
+    [Fact]
+    public async Task PasswordAuthentication_RenewsRejectedCachedTokenOnce()
+    {
+        var handler = new AuthenticationHandler { RejectSecondUserRequest = true };
+        using var client = new PlaneIssueClient(handler);
+        var settings = PasswordSettings();
+
+        await client.GetIssuesAsync(settings);
+        await client.GetIssuesAsync(settings);
+
+        Assert.Equal(2, handler.SignInCount);
+        Assert.Equal(3, handler.UserRequestCount);
+        Assert.Contains("token-2", handler.BearerTokens);
+    }
+
     [Fact]
     public void ParseSourceUrl_MapsWorkspaceViewPageToIssuesApi()
     {
@@ -364,4 +396,61 @@ public sealed class PlaneIssueClientTests
         id, id.ToUpperInvariant(), id, kind, completed ? "已完成" : "进行中",
         completed ? "completed" : "started", due.AddDays(-1), due, null,
         "测试", completed, string.Empty);
+
+    private static AppSettings PasswordSettings()
+    {
+        var settings = new AppSettings
+        {
+            SourceUrl = "https://plane.example.com/jx/workspace-views/my-all-issues",
+            AuthenticationMode = AuthenticationMode.Password,
+            UserName = "user@example.com"
+        };
+        settings.SetSecret("password");
+        return settings;
+    }
+
+    private sealed class AuthenticationHandler : HttpMessageHandler
+    {
+        public int SignInCount { get; private set; }
+        public int UserRequestCount { get; private set; }
+        public bool RejectSecondUserRequest { get; init; }
+        public List<string?> BearerTokens { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/sign-in/")
+            {
+                SignInCount++;
+                return Json($"{{\"access_token\":\"token-{SignInCount}\"}}");
+            }
+
+            BearerTokens.Add(request.Headers.Authorization?.Parameter);
+            if (path == "/api/users/me/")
+            {
+                UserRequestCount++;
+                if (RejectSecondUserRequest && UserRequestCount == 2)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                    {
+                        Content = new StringContent("unauthorized")
+                    });
+                }
+
+                return Json("{\"id\":\"user-1\"}");
+            }
+
+            return path.Contains("/issues/", StringComparison.Ordinal)
+                ? Json("{\"results\":[]}")
+                : Json("[]");
+        }
+
+        private static Task<HttpResponseMessage> Json(string json) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+    }
 }

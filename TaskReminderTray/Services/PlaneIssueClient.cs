@@ -11,6 +11,8 @@ namespace TaskReminderTray.Services;
 internal sealed class PlaneIssueClient : IDisposable
 {
     private readonly HttpClient _httpClient;
+    private string? _cachedPasswordCredentialKey;
+    private string? _cachedPasswordToken;
 
     public PlaneIssueClient(HttpMessageHandler? handler = null)
     {
@@ -26,9 +28,42 @@ internal sealed class PlaneIssueClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         var source = ParseSourceUrl(settings.SourceUrl);
-        var token = settings.AuthenticationMode == AuthenticationMode.Password
-            ? await SignInAsync(source.BaseUri, settings.UserName, settings.GetSecret(), cancellationToken)
-            : settings.GetSecret();
+        if (settings.AuthenticationMode == AuthenticationMode.AccessToken)
+        {
+            ClearCachedPasswordToken();
+            return await GetIssuesWithTokenAsync(
+                source, settings.GetSecret(), cancellationToken);
+        }
+
+        var credentialKey = string.Join('\n',
+            source.BaseUri.AbsoluteUri,
+            settings.UserName.Trim(),
+            settings.ProtectedSecret);
+        var token = string.Equals(_cachedPasswordCredentialKey, credentialKey,
+                        StringComparison.Ordinal) &&
+                    !string.IsNullOrWhiteSpace(_cachedPasswordToken)
+            ? _cachedPasswordToken
+            : await SignInAndCacheAsync(source.BaseUri, settings, credentialKey,
+                cancellationToken);
+
+        try
+        {
+            return await GetIssuesWithTokenAsync(source, token, cancellationToken);
+        }
+        catch (AuthenticationRejectedException)
+        {
+            ClearCachedPasswordToken();
+            token = await SignInAndCacheAsync(source.BaseUri, settings, credentialKey,
+                cancellationToken);
+            return await GetIssuesWithTokenAsync(source, token, cancellationToken);
+        }
+    }
+
+    private async Task<IReadOnlyList<IssueItem>> GetIssuesWithTokenAsync(
+        SourceLocation source,
+        string token,
+        CancellationToken cancellationToken)
+    {
 
         var currentUserJson = await GetJsonAsync(new Uri(source.BaseUri, "/api/users/me/"),
             token, "读取当前用户失败", cancellationToken);
@@ -50,6 +85,25 @@ internal sealed class PlaneIssueClient : IDisposable
         var projects = ParseLookup(await projectsTask, "identifier", "name");
         var issueTypes = ParseLookup(await issueTypesTask, "name");
         return ParseIssues(issuesJson, source, states, projects, issueTypes);
+    }
+
+    private async Task<string> SignInAndCacheAsync(
+        Uri baseUri,
+        AppSettings settings,
+        string credentialKey,
+        CancellationToken cancellationToken)
+    {
+        var token = await SignInAsync(baseUri, settings.UserName, settings.GetSecret(),
+            cancellationToken);
+        _cachedPasswordCredentialKey = credentialKey;
+        _cachedPasswordToken = token;
+        return token;
+    }
+
+    private void ClearCachedPasswordToken()
+    {
+        _cachedPasswordCredentialKey = null;
+        _cachedPasswordToken = null;
     }
 
     public async Task<int> TestConnectionAsync(
@@ -317,7 +371,7 @@ internal sealed class PlaneIssueClient : IDisposable
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            throw new InvalidOperationException("登录已失效或没有该视图的访问权限，请检查账号/令牌。");
+            throw new AuthenticationRejectedException();
         }
 
         if (!response.IsSuccessStatusCode)
@@ -336,6 +390,10 @@ internal sealed class PlaneIssueClient : IDisposable
         try
         {
             return await GetJsonAsync(uri, token, "读取状态字典失败", cancellationToken);
+        }
+        catch (AuthenticationRejectedException)
+        {
+            throw;
         }
         catch
         {
@@ -554,7 +612,19 @@ internal sealed class PlaneIssueClient : IDisposable
         }
     }
 
-    public void Dispose() => _httpClient.Dispose();
+    public void Dispose()
+    {
+        ClearCachedPasswordToken();
+        _httpClient.Dispose();
+    }
+
+    private sealed class AuthenticationRejectedException : InvalidOperationException
+    {
+        public AuthenticationRejectedException()
+            : base("登录已失效或没有该视图的访问权限，请检查账号/令牌。")
+        {
+        }
+    }
 }
 
 internal sealed record SourceLocation(

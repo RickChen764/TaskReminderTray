@@ -444,13 +444,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void UpdateDoNotDisturbState(bool force = false)
     {
         var active = IsDoNotDisturbActive;
+        var stateChanged = active != _lastDoNotDisturbActive;
         UpdateDoNotDisturbMenu(active);
-        if (!force && active == _lastDoNotDisturbActive)
+        if (!force && !stateChanged)
         {
             return;
         }
 
         _lastDoNotDisturbActive = active;
+        if (stateChanged)
+        {
+            ConfigureTimer();
+        }
+
         if (active)
         {
             _notificationForm.HideNotification();
@@ -460,6 +466,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         ShowPendingNotification();
         ShowDuePersonalReminder();
+        if (stateChanged)
+        {
+            _ = RefreshAsync(showSuccess: false);
+        }
     }
 
     private void UpdateDoNotDisturbMenu(bool active)
@@ -482,7 +492,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ConfigureTimer()
     {
         _refreshTimer.Stop();
-        _refreshTimer.Interval = checked(Math.Clamp(_settings.RefreshMinutes, 1, 1440) * 60 * 1000);
+        var minutes = RefreshIntervalPolicy.GetMinutes(
+            _settings.RefreshMinutes, IsDoNotDisturbActive);
+        _refreshTimer.Interval = checked(minutes * 60 * 1000);
         if (_settings.IsConfigured)
         {
             _refreshTimer.Start();

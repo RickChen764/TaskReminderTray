@@ -169,7 +169,9 @@ internal sealed class SettingsForm : Form
             UserName = _userName.Text.Trim(),
             RefreshMinutes = (int)_refreshMinutes.Value,
             DueSoonDays = (int)_dueSoonDays.Value,
-            StartWithWindows = _startWithWindows.Checked
+            StartWithWindows = _startWithWindows.Checked,
+            ManualDoNotDisturb = Result.ManualDoNotDisturb,
+            DoNotDisturbRanges = [.. Result.DoNotDisturbRanges]
         };
         try
         {
