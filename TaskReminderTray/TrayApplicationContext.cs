@@ -33,6 +33,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _dueItem = new("临期：--") { Enabled = false };
     private readonly ToolStripMenuItem _updatedItem = new("最后更新：--") { Enabled = false };
     private readonly ToolStripMenuItem _refreshItem = new("立即刷新");
+    private readonly ToolStripMenuItem _doNotDisturbMenu = new("免打扰");
+    private readonly ToolStripMenuItem _doNotDisturbStatusItem = new("当前：未开启")
+    {
+        Enabled = false
+    };
+    private readonly ToolStripMenuItem _manualDoNotDisturbItem = new("手动开启免打扰")
+    {
+        CheckOnClick = true
+    };
+    private readonly ToolStripMenuItem _manageDoNotDisturbItem = new("管理时间段…");
     private readonly ToolStripMenuItem _versionItem = new() { Enabled = false };
     private readonly ToolStripMenuItem _updateItem = new("检查更新…");
     private AppSettings _settings;
@@ -41,6 +51,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _checkingUpdate;
     private bool _showingUpdatePrompt;
     private bool _installingUpdate;
+    private bool _lastDoNotDisturbActive;
     private string? _lastError;
     private IReadOnlyList<IssueItem> _lastIssues = [];
     private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
@@ -61,6 +72,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_refreshItem);
         _menu.Items.Add("打开任务页面", null, (_, _) => OpenSourcePage());
         _menu.Items.Add("设置…", null, (_, _) => ShowSettings());
+        _doNotDisturbMenu.DropDownItems.Add(_doNotDisturbStatusItem);
+        _doNotDisturbMenu.DropDownItems.Add(new ToolStripSeparator());
+        _doNotDisturbMenu.DropDownItems.Add(_manualDoNotDisturbItem);
+        _doNotDisturbMenu.DropDownItems.Add(_manageDoNotDisturbItem);
+        _menu.Items.Add(_doNotDisturbMenu);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_versionItem);
         _menu.Items.Add(_updateItem);
@@ -70,6 +86,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _refreshItem.Click += async (_, _) => await RefreshAsync(showSuccess: true);
         _refreshTimer.Tick += async (_, _) => await RefreshAsync(showSuccess: false);
         _updateItem.Click += async (_, _) => await UpdateMenuItem_ClickAsync();
+        _manualDoNotDisturbItem.Click += (_, _) => ToggleManualDoNotDisturb();
+        _manageDoNotDisturbItem.Click += (_, _) => ManageDoNotDisturbRanges();
         _updateTimer.Interval = checked(6 * 60 * 60 * 1000);
         _updateTimer.Tick += async (_, _) => await CheckForUpdatesAsync(notifyWhenCurrent: false);
         _versionItem.Text = $"当前版本：v{UpdateService.CurrentVersion.ToString(3)}";
@@ -93,7 +111,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _detailsForm.SnoozeRequested += AddSnoozedReminder;
         _snoozedReminderForm.AcknowledgeRequested += AcknowledgeSnoozedReminder;
         _snoozedReminderForm.RescheduleRequested += RescheduleSnoozedReminder;
-        _personalReminderTimer.Tick += (_, _) => ShowDuePersonalReminder();
+        _personalReminderTimer.Tick += (_, _) =>
+        {
+            UpdateDoNotDisturbState();
+            ShowDuePersonalReminder();
+        };
         _balloonVisibilityTimer.Tick += (_, _) =>
         {
             _balloonVisibilityTimer.Stop();
@@ -109,6 +131,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _toolbar.SetHoverEnabled(false);
         _toolbar.Show();
         _notifyIcon.Visible = !_toolbar.IsAttached;
+
+        _lastDoNotDisturbActive = IsDoNotDisturbActive;
+        UpdateDoNotDisturbMenu(_lastDoNotDisturbActive);
 
         ConfigureTimer();
         _updateTimer.Start();
@@ -296,6 +321,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowDuePersonalReminder()
     {
+        if (IsDoNotDisturbActive)
+        {
+            _snoozedReminderForm.HideReminder();
+            return;
+        }
+
         var due = _personalWorkState.Reminders
             .Where(reminder => reminder.RemindAt <= DateTimeOffset.Now)
             .OrderBy(reminder => reminder.RemindAt)
@@ -325,6 +356,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowPendingNotification()
     {
+        if (IsDoNotDisturbActive)
+        {
+            _notificationForm.HideNotification();
+            return;
+        }
+
         if (_pendingNotifications.Count == 0)
         {
             _notificationForm.HideNotification();
@@ -356,6 +393,90 @@ internal sealed class TrayApplicationContext : ApplicationContext
             MessageBox.Show($"保存配置失败：{exception.Message}", "任务提醒",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private bool IsDoNotDisturbActive => DoNotDisturbEvaluator.IsActive(
+        _settings.ManualDoNotDisturb,
+        _settings.DoNotDisturbRanges,
+        TimeOnly.FromDateTime(DateTime.Now));
+
+    private void ToggleManualDoNotDisturb()
+    {
+        var previous = _settings.ManualDoNotDisturb;
+        try
+        {
+            _settings.ManualDoNotDisturb = _manualDoNotDisturbItem.Checked;
+            _settingsStore.Save(_settings);
+            UpdateDoNotDisturbState(force: true);
+        }
+        catch (Exception exception)
+        {
+            _settings.ManualDoNotDisturb = previous;
+            _manualDoNotDisturbItem.Checked = _settings.ManualDoNotDisturb;
+            MessageBox.Show($"无法保存免打扰设置：{exception.Message}", "任务提醒",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ManageDoNotDisturbRanges()
+    {
+        using var form = new DoNotDisturbScheduleForm(_settings.DoNotDisturbRanges);
+        if (form.ShowDialog() != DialogResult.OK)
+        {
+            return;
+        }
+
+        var previous = _settings.DoNotDisturbRanges;
+        try
+        {
+            _settings.DoNotDisturbRanges = [.. form.Result];
+            _settingsStore.Save(_settings);
+            UpdateDoNotDisturbState(force: true);
+        }
+        catch (Exception exception)
+        {
+            _settings.DoNotDisturbRanges = previous;
+            MessageBox.Show($"无法保存免打扰时间段：{exception.Message}", "任务提醒",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void UpdateDoNotDisturbState(bool force = false)
+    {
+        var active = IsDoNotDisturbActive;
+        UpdateDoNotDisturbMenu(active);
+        if (!force && active == _lastDoNotDisturbActive)
+        {
+            return;
+        }
+
+        _lastDoNotDisturbActive = active;
+        if (active)
+        {
+            _notificationForm.HideNotification();
+            _snoozedReminderForm.HideReminder();
+            return;
+        }
+
+        ShowPendingNotification();
+        ShowDuePersonalReminder();
+    }
+
+    private void UpdateDoNotDisturbMenu(bool active)
+    {
+        _manualDoNotDisturbItem.Checked = _settings.ManualDoNotDisturb;
+        _doNotDisturbMenu.Text = active ? "免打扰（已开启）" : "免打扰";
+        if (_settings.ManualDoNotDisturb)
+        {
+            _doNotDisturbStatusItem.Text = "当前：手动开启";
+            return;
+        }
+
+        var activeRange = DoNotDisturbEvaluator.ActiveRange(
+            _settings.DoNotDisturbRanges, TimeOnly.FromDateTime(DateTime.Now));
+        _doNotDisturbStatusItem.Text = activeRange is not null
+            ? $"当前：时间段 {activeRange.DisplayText}"
+            : "当前：未开启";
     }
 
     private void ConfigureTimer()
@@ -521,6 +642,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowBalloon(string title, string text, ToolTipIcon icon)
     {
+        if (IsDoNotDisturbActive)
+        {
+            return;
+        }
+
         // NotifyIcon 隐藏时 Windows 不显示气泡。嵌入式工具条工作期间仅在
         // 通知所需的几秒内注册图标，之后自动隐藏，避免长期出现重复入口。
         if (!_notifyIcon.Visible)

@@ -21,6 +21,7 @@ internal sealed class ContextMenuDismissController : IDisposable
     private Thread? _mouseThread;
     private IntPtr _mouseHook;
     private IntPtr _activeMenuWindow;
+    private IntPtr[] _activeMenuWindows = [];
     private uint _mouseThreadId;
     private int _closeQueued;
     private bool _disposed;
@@ -31,6 +32,7 @@ internal sealed class ContextMenuDismissController : IDisposable
         _mouseProc = MouseHookCallback;
         _menu.Opened += Menu_Opened;
         _menu.Closed += Menu_Closed;
+        RegisterDropDownEvents(_menu.Items, register: true);
     }
 
     private void Menu_Opened(object? sender, EventArgs e)
@@ -41,6 +43,7 @@ internal sealed class ContextMenuDismissController : IDisposable
         _menu.Focus();
         _ = SetForegroundWindow(_menu.Handle);
         _activeMenuWindow = _menu.Handle;
+        _activeMenuWindows = [_menu.Handle];
         StartMouseMonitor();
 
         var cancellation = new CancellationTokenSource();
@@ -54,6 +57,7 @@ internal sealed class ContextMenuDismissController : IDisposable
         StopMonitor();
         StopMouseMonitor();
         _activeMenuWindow = IntPtr.Zero;
+        _activeMenuWindows = [];
         Interlocked.Exchange(ref _closeQueued, 0);
     }
 
@@ -75,9 +79,9 @@ internal sealed class ContextMenuDismissController : IDisposable
             while (!cancellationToken.IsCancellationRequested && IsWindowVisible(menuWindow))
             {
                 var foreground = GetForegroundWindow();
-                if (foreground == menuWindow)
+                if (IsActiveMenuWindow(foreground))
                 {
-                    foregroundBaseline = menuWindow;
+                    foregroundBaseline = foreground;
                 }
                 else if (foregroundBaseline != IntPtr.Zero &&
                          foreground != IntPtr.Zero &&
@@ -98,8 +102,7 @@ internal sealed class ContextMenuDismissController : IDisposable
 
                 var buttonDown = IsAnyButtonDown();
                 if (GetCursorPos(out var point) &&
-                    GetWindowRect(menuWindow, out var bounds) &&
-                    !bounds.Contains(point) &&
+                    !IsPointInsideActiveMenu(point) &&
                     buttonDown && !previousButtonDown)
                 {
                     QueueClose(menuWindow);
@@ -179,8 +182,7 @@ internal sealed class ContextMenuDismissController : IDisposable
             message.ToInt32() is WmLButtonDown or WmRButtonDown or WmMButtonDown)
         {
             var input = Marshal.PtrToStructure<LowLevelMouseInput>(hookData);
-            if (GetWindowRect(menuWindow, out var bounds) &&
-                !bounds.Contains(input.Point))
+            if (!IsPointInsideActiveMenu(input.Point))
             {
                 QueueClose(menuWindow);
             }
@@ -242,8 +244,72 @@ internal sealed class ContextMenuDismissController : IDisposable
         _disposed = true;
         StopMonitor();
         StopMouseMonitor();
+        RegisterDropDownEvents(_menu.Items, register: false);
         _menu.Opened -= Menu_Opened;
         _menu.Closed -= Menu_Closed;
+    }
+
+    private void RegisterDropDownEvents(ToolStripItemCollection items, bool register)
+    {
+        foreach (var item in items.OfType<ToolStripMenuItem>())
+        {
+            if (register)
+            {
+                item.DropDownOpened += MenuItem_DropDownOpened;
+                item.DropDownClosed += MenuItem_DropDownClosed;
+            }
+            else
+            {
+                item.DropDownOpened -= MenuItem_DropDownOpened;
+                item.DropDownClosed -= MenuItem_DropDownClosed;
+            }
+
+            RegisterDropDownEvents(item.DropDownItems, register);
+        }
+    }
+
+    private void MenuItem_DropDownOpened(object? sender, EventArgs e)
+    {
+        if (sender is not ToolStripMenuItem item)
+        {
+            return;
+        }
+
+        var handle = item.DropDown.Handle;
+        _activeMenuWindows = [
+            .. _activeMenuWindows.Where(window => window != handle),
+            handle
+        ];
+    }
+
+    private void MenuItem_DropDownClosed(object? sender, EventArgs e)
+    {
+        if (sender is not ToolStripMenuItem item || !item.DropDown.IsHandleCreated)
+        {
+            return;
+        }
+
+        var handle = item.DropDown.Handle;
+        _activeMenuWindows = [.. _activeMenuWindows.Where(window => window != handle)];
+    }
+
+    private bool IsActiveMenuWindow(IntPtr window) =>
+        window != IntPtr.Zero &&
+        Volatile.Read(ref _activeMenuWindows).Contains(window);
+
+    private bool IsPointInsideActiveMenu(NativePoint point)
+    {
+        foreach (var window in Volatile.Read(ref _activeMenuWindows))
+        {
+            if (window != IntPtr.Zero &&
+                GetWindowRect(window, out var bounds) &&
+                bounds.Contains(point))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsAnyButtonDown() =>
