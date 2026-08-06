@@ -241,7 +241,8 @@ internal sealed class ScheduleDetailsForm : Form
 
         private void DetailsSurface_MouseMove(object? sender, MouseEventArgs e)
         {
-            Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location))
+            Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location)) ||
+                     _interactions.WeekNavigation.Any(item => item.Bounds.Contains(e.Location))
                 ? Cursors.Hand
                 : Cursors.Default;
         }
@@ -259,6 +260,21 @@ internal sealed class ScheduleDetailsForm : Form
 
             if (e.Button != MouseButtons.Left)
             {
+                return;
+            }
+
+            var weekNavigation = _interactions.WeekNavigation.LastOrDefault(item =>
+                item.Bounds.Contains(e.Location));
+            if (weekNavigation is not null && _content is not null)
+            {
+                _content.WeekOffset = weekNavigation.Navigation switch
+                {
+                    ScheduleWeekNavigation.Previous => _content.WeekOffset - 1,
+                    ScheduleWeekNavigation.Current => 0,
+                    ScheduleWeekNavigation.Next => _content.WeekOffset + 1,
+                    _ => _content.WeekOffset
+                };
+                LayoutChanged?.Invoke();
                 return;
             }
 

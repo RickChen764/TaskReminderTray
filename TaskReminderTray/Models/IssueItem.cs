@@ -139,6 +139,7 @@ internal static class WorkStageClassifier
 internal sealed class ScheduleSummary
 {
     public required IReadOnlyList<IssueItem> Issues { get; init; }
+    public required IReadOnlyList<IssueItem> AllIssues { get; init; }
     public int TaskCount { get; init; }
     public int BugCount { get; init; }
     public int DueSoonCount { get; init; }
@@ -155,8 +156,11 @@ internal sealed class ScheduleSummary
 
     public IssueItem? CurrentFocus => DevelopmentIssues.FirstOrDefault();
 
-    public IReadOnlyList<IssueItem> GetIssuesForDate(DateOnly date) => Issues
-        .Where(issue => issue.Stage is WorkStage.Development or WorkStage.FollowUp &&
+    public IReadOnlyList<IssueItem> GetIssuesForDate(
+        DateOnly date,
+        bool includeCompleted = false) => (includeCompleted ? AllIssues : Issues)
+        .Where(issue => (issue.Stage is WorkStage.Development or WorkStage.FollowUp ||
+                         includeCompleted && issue.Stage == WorkStage.Completed) &&
                         IsScheduledOn(issue, date))
         .OrderBy(issue => issue.Stage == WorkStage.Development ? 0 : 1)
         .ThenBy(issue => issue.PriorityRank)
@@ -182,7 +186,8 @@ internal sealed class ScheduleSummary
         DateOnly today,
         int dueSoonDays)
     {
-        var active = issues.Where(issue => !issue.IsCompleted).ToArray();
+        var all = issues.ToArray();
+        var active = all.Where(issue => !issue.IsCompleted).ToArray();
         var dueLimit = today.AddDays(Math.Max(0, dueSoonDays));
         var development = active
             .Where(issue => issue.Stage == WorkStage.Development)
@@ -206,6 +211,7 @@ internal sealed class ScheduleSummary
         return new ScheduleSummary
         {
             Issues = active,
+            AllIssues = all,
             DevelopmentIssues = development,
             FollowUpIssues = followUp,
             WaitingIssues = waiting,

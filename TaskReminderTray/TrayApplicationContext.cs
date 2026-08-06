@@ -212,9 +212,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         var expandedDates = _detailsContent?.ExpandedDates.ToArray() ?? [];
+        var weekOffset = _detailsContent?.WeekOffset ?? 0;
         _detailsContent = HoverCardContent.CreateSchedule(summary, today, DateTime.Now, color);
         _detailsContent.ExpandedDates.UnionWith(expandedDates);
         _detailsContent.FocusIssueId = _personalWorkState.FocusIssueId;
+        _detailsContent.WeekOffset = weekOffset;
         _toolbar.SetDisplay(display, _detailsContent, color);
         _detailsForm.SetContent(_detailsContent);
         SetTooltip($"TaskReminderTray - {display}");

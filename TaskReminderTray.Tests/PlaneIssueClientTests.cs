@@ -233,6 +233,20 @@ public sealed class PlaneIssueClientTests
     }
 
     [Fact]
+    public void ScheduleSummary_CanIncludeCompletedIssuesForHistoricalWeeks()
+    {
+        var monday = new DateOnly(2026, 7, 27);
+        var completed = Issue("done", IssueKind.Task, monday.AddDays(2), completed: true) with
+        {
+            StartDate = monday
+        };
+        var summary = ScheduleSummary.Create([completed], monday.AddDays(10), 2);
+
+        Assert.Empty(summary.GetIssuesForDate(monday));
+        Assert.Single(summary.GetIssuesForDate(monday, includeCompleted: true));
+    }
+
+    [Fact]
     public void CompactTitle_RemovesRepeatedDevelopmentPrefixes()
     {
         var title = IssueTextFormatter.CompactTitle(

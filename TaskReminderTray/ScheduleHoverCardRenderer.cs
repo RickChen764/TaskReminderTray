@@ -17,6 +17,21 @@ internal sealed class HoverCardContent
     public DateTime UpdatedAt { get; init; } = DateTime.Now;
     public HashSet<DateOnly> ExpandedDates { get; } = [];
     public string? FocusIssueId { get; set; }
+    public int WeekOffset { get; set; }
+
+    public DateOnly DisplayedWeekStart =>
+        ScheduleSummary.StartOfWeek(Today).AddDays(WeekOffset * 7);
+
+    public string DisplayedScheduleTitle => WeekOffset switch
+    {
+        0 => "本周开发安排",
+        -1 => "上周开发安排",
+        1 => "下周开发安排",
+        _ => "周开发安排"
+    };
+
+    public IReadOnlyList<IssueItem> GetDisplayedIssuesForDate(DateOnly date) =>
+        Summary?.GetIssuesForDate(date, includeCompleted: WeekOffset < 0) ?? [];
 
     public static HoverCardContent CreateStatus(
         string title,
@@ -50,12 +65,15 @@ internal sealed class HoverCardContent
             return $"{Title}\n{Message}";
         }
 
-        var weekStart = ScheduleSummary.StartOfWeek(Today);
-        var lines = new List<string> { $"{Title} {weekStart:M/d}–{weekStart.AddDays(6):M/d}" };
+        var weekStart = DisplayedWeekStart;
+        var lines = new List<string>
+        {
+            $"{DisplayedScheduleTitle} {weekStart:M/d}–{weekStart.AddDays(6):M/d}"
+        };
         for (var index = 0; index < 7; index++)
         {
             var date = weekStart.AddDays(index);
-            var issues = Summary.GetIssuesForDate(date);
+            var issues = GetDisplayedIssuesForDate(date);
             lines.Add(issues.Count == 0
                 ? $"{Weekday(date)} {date:M/d}：暂无安排"
                 : $"{Weekday(date)} {date:M/d}：" + string.Join("；",
@@ -98,15 +116,28 @@ internal sealed record ScheduleExpandRegion(
     DateOnly Date,
     bool IsExpanded);
 
+internal enum ScheduleWeekNavigation
+{
+    Previous,
+    Current,
+    Next
+}
+
+internal sealed record ScheduleWeekNavigationRegion(
+    Rectangle Bounds,
+    ScheduleWeekNavigation Navigation);
+
 internal sealed class ScheduleInteractionMap
 {
     public List<ScheduleIssueRegion> Issues { get; } = [];
     public List<ScheduleExpandRegion> Expanders { get; } = [];
+    public List<ScheduleWeekNavigationRegion> WeekNavigation { get; } = [];
 
     public void Clear()
     {
         Issues.Clear();
         Expanders.Clear();
+        WeekNavigation.Clear();
     }
 }
 
@@ -140,17 +171,20 @@ internal static class UsageHoverCardRenderer
         }
 
         var expandedExtra = 0;
-        foreach (var date in content.ExpandedDates)
+        var weekStart = content.DisplayedWeekStart;
+        var weekEnd = weekStart.AddDays(6);
+        foreach (var date in content.ExpandedDates.Where(date =>
+                     date >= weekStart && date <= weekEnd))
         {
-            var count = content.Summary.GetIssuesForDate(date).Count;
+            var count = content.GetDisplayedIssuesForDate(date).Count;
             if (count > 1)
             {
                 expandedExtra += 8 + (count - 1) * ExpandedIssueRowHeight;
             }
         }
 
-        // 页头 + 七天 + 接下来 + 弱化概览；展开日按实际工单数增高。
-        return new Size(Scale(LogicalWidth, dpi), Scale(424 + expandedExtra, dpi));
+        // 页头含周切换栏；展开日按实际工单数增高。
+        return new Size(Scale(LogicalWidth, dpi), Scale(440 + expandedExtra, dpi));
     }
 
     public static void Draw(
@@ -209,7 +243,7 @@ internal static class UsageHoverCardRenderer
         var x = bounds.Left + padding;
         var width = bounds.Width - padding * 2;
         var y = bounds.Top + Scale(13, dpi);
-        var weekStart = ScheduleSummary.StartOfWeek(content.Today);
+        var weekStart = content.DisplayedWeekStart;
         var weekEnd = weekStart.AddDays(6);
 
         using var headingFont = Font(10.5F, FontStyle.Bold, dpi);
@@ -222,7 +256,7 @@ internal static class UsageHoverCardRenderer
         using var secondaryBrush = new SolidBrush(SecondaryText);
         using var mutedBrush = new SolidBrush(MutedText);
 
-        graphics.DrawString(content.Title, headingFont, primaryBrush, x, y);
+        graphics.DrawString(content.DisplayedScheduleTitle, headingFont, primaryBrush, x, y);
         using (var right = new StringFormat { Alignment = StringAlignment.Far })
         {
             graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
@@ -230,12 +264,27 @@ internal static class UsageHoverCardRenderer
             graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
                 new RectangleF(x, y + Scale(17, dpi), width, Scale(15, dpi)), right);
         }
-        y += Scale(34, dpi);
+        var navigationY = y + Scale(21, dpi);
+        var previousBounds = new Rectangle(x, navigationY, Scale(60, dpi), Scale(23, dpi));
+        var currentBounds = new Rectangle(previousBounds.Right + Scale(5, dpi), navigationY,
+            Scale(44, dpi), Scale(23, dpi));
+        var nextBounds = new Rectangle(currentBounds.Right + Scale(5, dpi), navigationY,
+            Scale(60, dpi), Scale(23, dpi));
+        DrawWeekNavigationButton(graphics, previousBounds, dpi, "‹  上一周", false);
+        DrawWeekNavigationButton(graphics, currentBounds, dpi, "本周", content.WeekOffset == 0);
+        DrawWeekNavigationButton(graphics, nextBounds, dpi, "下一周  ›", false);
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            previousBounds, ScheduleWeekNavigation.Previous));
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            currentBounds, ScheduleWeekNavigation.Current));
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            nextBounds, ScheduleWeekNavigation.Next));
+        y += Scale(50, dpi);
 
         for (var dayIndex = 0; dayIndex < 7; dayIndex++)
         {
             var date = weekStart.AddDays(dayIndex);
-            var issues = summary.GetIssuesForDate(date);
+            var issues = content.GetDisplayedIssuesForDate(date);
             var expanded = issues.Count > 1 && content.ExpandedDates.Contains(date);
             var isToday = date == content.Today;
             var logicalHeight = expanded
@@ -267,6 +316,29 @@ internal static class UsageHoverCardRenderer
         {
             graphics.DrawString(overviewText, smallFont, mutedBrush, overview, centered);
         }
+    }
+
+    private static void DrawWeekNavigationButton(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        string text,
+        bool selected)
+    {
+        FillRoundedRectangle(graphics, bounds, Scale(4, dpi),
+            selected ? Color.FromArgb(45, 73, 105) : Surface);
+        using var borderPath = RoundedRectangle(bounds, Scale(4, dpi));
+        using var borderPen = new Pen(selected ? Blue : Border, ScaleF(1, dpi));
+        graphics.DrawPath(borderPen, borderPath);
+        using var font = Font(7.2F, selected ? FontStyle.Bold : FontStyle.Regular, dpi);
+        using var brush = new SolidBrush(selected ? PrimaryText : SecondaryText);
+        using var centered = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        graphics.DrawString(text, font, brush, bounds, centered);
     }
 
     private static void DrawDayRow(

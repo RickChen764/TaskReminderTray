@@ -31,10 +31,72 @@ public sealed class HoverCardTests
         UsageHoverCardRenderer.Draw(graphics, new Rectangle(Point.Empty, size), 96, content);
 
         Assert.Equal(540, size.Width);
-        Assert.Equal(424, size.Height);
+        Assert.Equal(440, size.Height);
         Assert.NotEqual(bitmap.GetPixel(size.Width / 2, size.Height / 2), Color.Empty);
         Assert.Contains("任务", content.ToPlainText());
         Assert.Contains("APP-87", content.ToPlainText());
+    }
+
+    [Fact]
+    public void ScheduleCard_WeekNavigationDefaultsToCurrentAndMapsAllControls()
+    {
+        var today = new DateOnly(2026, 8, 6);
+        var summary = ScheduleSummary.Create([], today, 2);
+        var content = HoverCardContent.CreateSchedule(summary, today, DateTime.Now, Color.Green);
+        var map = new ScheduleInteractionMap();
+        var size = UsageHoverCardRenderer.Measure(content, 96);
+        using var bitmap = new Bitmap(size.Width, size.Height);
+        using var graphics = Graphics.FromImage(bitmap);
+
+        UsageHoverCardRenderer.Draw(graphics,
+            new Rectangle(Point.Empty, size), 96, content, map);
+
+        Assert.Equal(0, content.WeekOffset);
+        Assert.Equal(new DateOnly(2026, 8, 3), content.DisplayedWeekStart);
+        Assert.Equal(3, map.WeekNavigation.Count);
+        Assert.Collection(map.WeekNavigation,
+            item => Assert.Equal(ScheduleWeekNavigation.Previous, item.Navigation),
+            item => Assert.Equal(ScheduleWeekNavigation.Current, item.Navigation),
+            item => Assert.Equal(ScheduleWeekNavigation.Next, item.Navigation));
+        Assert.All(map.WeekNavigation, item => Assert.False(item.Bounds.IsEmpty));
+    }
+
+    [Theory]
+    [InlineData(-1, 2026, 7, 27, "上周开发安排")]
+    [InlineData(0, 2026, 8, 3, "本周开发安排")]
+    [InlineData(1, 2026, 8, 10, "下周开发安排")]
+    [InlineData(2, 2026, 8, 17, "周开发安排")]
+    public void ScheduleCard_WeekOffsetSelectsExpectedWeek(
+        int offset, int year, int month, int day, string title)
+    {
+        var today = new DateOnly(2026, 8, 6);
+        var content = HoverCardContent.CreateSchedule(
+            ScheduleSummary.Create([], today, 2), today, DateTime.Now, Color.Green);
+
+        content.WeekOffset = offset;
+
+        Assert.Equal(new DateOnly(year, month, day), content.DisplayedWeekStart);
+        Assert.Equal(title, content.DisplayedScheduleTitle);
+        Assert.Contains(content.DisplayedWeekStart.ToString("M/d"), content.ToPlainText());
+    }
+
+    [Fact]
+    public void ScheduleCard_PreviousWeekIncludesCompletedScheduledWork()
+    {
+        var today = new DateOnly(2026, 8, 6);
+        var previousMonday = new DateOnly(2026, 7, 27);
+        var completed = new IssueItem("done", "SJ-700", "已完成历史工作",
+            IssueKind.Task, "已完成", "completed", previousMonday,
+            previousMonday.AddDays(2), null, "SJ", true, string.Empty);
+        var content = HoverCardContent.CreateSchedule(
+            ScheduleSummary.Create([completed], today, 2), today, DateTime.Now, Color.Green);
+
+        Assert.Empty(content.GetDisplayedIssuesForDate(previousMonday));
+
+        content.WeekOffset = -1;
+
+        Assert.Single(content.GetDisplayedIssuesForDate(previousMonday));
+        Assert.Contains("SJ-700", content.ToPlainText());
     }
 
     [Fact]
