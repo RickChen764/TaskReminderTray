@@ -205,6 +205,7 @@ internal sealed class ScheduleDetailsForm : Form
             };
             BuildIssueMenu();
             MouseMove += DetailsSurface_MouseMove;
+            MouseLeave += (_, _) => SetHoveredWeekNavigation(null);
             MouseUp += DetailsSurface_MouseUp;
         }
 
@@ -241,10 +242,24 @@ internal sealed class ScheduleDetailsForm : Form
 
         private void DetailsSurface_MouseMove(object? sender, MouseEventArgs e)
         {
+            var weekNavigation = _interactions.WeekNavigation.LastOrDefault(item =>
+                item.Bounds.Contains(e.Location));
+            SetHoveredWeekNavigation(weekNavigation?.Navigation);
             Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location)) ||
-                     _interactions.WeekNavigation.Any(item => item.Bounds.Contains(e.Location))
+                     weekNavigation is not null
                 ? Cursors.Hand
                 : Cursors.Default;
+        }
+
+        private void SetHoveredWeekNavigation(ScheduleWeekNavigation? navigation)
+        {
+            if (_content is null || _content.HoveredWeekNavigation == navigation)
+            {
+                return;
+            }
+
+            _content.HoveredWeekNavigation = navigation;
+            Invalidate();
         }
 
         private void DetailsSurface_MouseUp(object? sender, MouseEventArgs e)

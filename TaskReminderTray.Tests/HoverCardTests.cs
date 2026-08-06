@@ -31,7 +31,7 @@ public sealed class HoverCardTests
         UsageHoverCardRenderer.Draw(graphics, new Rectangle(Point.Empty, size), 96, content);
 
         Assert.Equal(540, size.Width);
-        Assert.Equal(440, size.Height);
+        Assert.Equal(424, size.Height);
         Assert.NotEqual(bitmap.GetPixel(size.Width / 2, size.Height / 2), Color.Empty);
         Assert.Contains("任务", content.ToPlainText());
         Assert.Contains("APP-87", content.ToPlainText());
@@ -59,6 +59,9 @@ public sealed class HoverCardTests
             item => Assert.Equal(ScheduleWeekNavigation.Current, item.Navigation),
             item => Assert.Equal(ScheduleWeekNavigation.Next, item.Navigation));
         Assert.All(map.WeekNavigation, item => Assert.False(item.Bounds.IsEmpty));
+        Assert.True(map.WeekNavigation[0].Bounds.Right <= map.WeekNavigation[1].Bounds.Left);
+        Assert.True(map.WeekNavigation[1].Bounds.Right <= map.WeekNavigation[2].Bounds.Left);
+        Assert.All(map.WeekNavigation, item => Assert.True(item.Bounds.Bottom < 50));
     }
 
     [Theory]

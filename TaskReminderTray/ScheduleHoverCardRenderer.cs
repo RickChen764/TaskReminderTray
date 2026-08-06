@@ -18,6 +18,7 @@ internal sealed class HoverCardContent
     public HashSet<DateOnly> ExpandedDates { get; } = [];
     public string? FocusIssueId { get; set; }
     public int WeekOffset { get; set; }
+    public ScheduleWeekNavigation? HoveredWeekNavigation { get; set; }
 
     public DateOnly DisplayedWeekStart =>
         ScheduleSummary.StartOfWeek(Today).AddDays(WeekOffset * 7);
@@ -183,8 +184,8 @@ internal static class UsageHoverCardRenderer
             }
         }
 
-        // 页头含周切换栏；展开日按实际工单数增高。
-        return new Size(Scale(LogicalWidth, dpi), Scale(440 + expandedExtra, dpi));
+        // 周切换已收入标题栏，不额外占用任务列表空间。
+        return new Size(Scale(LogicalWidth, dpi), Scale(424 + expandedExtra, dpi));
     }
 
     public static void Draw(
@@ -208,6 +209,18 @@ internal static class UsageHoverCardRenderer
         }
 
         DrawWeek(graphics, bounds, dpi, content, interactions);
+    }
+
+    internal static Bitmap RenderPreview(
+        HoverCardContent content,
+        int dpi,
+        ScheduleInteractionMap? interactions = null)
+    {
+        var size = Measure(content, dpi);
+        var bitmap = new Bitmap(size.Width, size.Height);
+        using var graphics = Graphics.FromImage(bitmap);
+        Draw(graphics, new Rectangle(Point.Empty, size), dpi, content, interactions);
+        return bitmap;
     }
 
     private static void DrawStatus(
@@ -256,30 +269,52 @@ internal static class UsageHoverCardRenderer
         using var secondaryBrush = new SolidBrush(SecondaryText);
         using var mutedBrush = new SolidBrush(MutedText);
 
-        graphics.DrawString(content.DisplayedScheduleTitle, headingFont, primaryBrush, x, y);
+        var dateWidth = Scale(92, dpi);
+        var navigationWidth = Scale(106, dpi);
+        var navigationHeight = Scale(27, dpi);
+        var navigationRight = x + width - dateWidth - Scale(10, dpi);
+        var navigationBounds = new Rectangle(
+            navigationRight - navigationWidth,
+            y + Scale(1, dpi),
+            navigationWidth,
+            navigationHeight);
+        var titleBounds = new RectangleF(x, y,
+            Math.Max(Scale(120, dpi), navigationBounds.Left - x - Scale(12, dpi)),
+            Scale(25, dpi));
+        using (var titleFormat = new StringFormat
+               {
+                   Trimming = StringTrimming.EllipsisCharacter,
+                   FormatFlags = StringFormatFlags.NoWrap,
+                   LineAlignment = StringAlignment.Center
+               })
+        {
+            graphics.DrawString("开发安排", headingFont, primaryBrush,
+                titleBounds, titleFormat);
+        }
         using (var right = new StringFormat { Alignment = StringAlignment.Far })
         {
             graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
-                new RectangleF(x, y - Scale(1, dpi), width, Scale(19, dpi)), right);
+                new RectangleF(x + width - dateWidth, y - Scale(1, dpi),
+                    dateWidth, Scale(19, dpi)), right);
             graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
-                new RectangleF(x, y + Scale(17, dpi), width, Scale(15, dpi)), right);
+                new RectangleF(x + width - dateWidth, y + Scale(17, dpi),
+                    dateWidth, Scale(15, dpi)), right);
         }
-        var navigationY = y + Scale(21, dpi);
-        var previousBounds = new Rectangle(x, navigationY, Scale(60, dpi), Scale(23, dpi));
-        var currentBounds = new Rectangle(previousBounds.Right + Scale(5, dpi), navigationY,
-            Scale(44, dpi), Scale(23, dpi));
-        var nextBounds = new Rectangle(currentBounds.Right + Scale(5, dpi), navigationY,
-            Scale(60, dpi), Scale(23, dpi));
-        DrawWeekNavigationButton(graphics, previousBounds, dpi, "‹  上一周", false);
-        DrawWeekNavigationButton(graphics, currentBounds, dpi, "本周", content.WeekOffset == 0);
-        DrawWeekNavigationButton(graphics, nextBounds, dpi, "下一周  ›", false);
+        var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
+            Scale(28, dpi), navigationBounds.Height);
+        var currentBounds = new Rectangle(previousBounds.Right, navigationBounds.Top,
+            Scale(50, dpi), navigationBounds.Height);
+        var nextBounds = new Rectangle(currentBounds.Right, navigationBounds.Top,
+            navigationBounds.Right - currentBounds.Right, navigationBounds.Height);
+        DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
+            currentBounds, nextBounds, dpi, content);
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
             previousBounds, ScheduleWeekNavigation.Previous));
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
             currentBounds, ScheduleWeekNavigation.Current));
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
             nextBounds, ScheduleWeekNavigation.Next));
-        y += Scale(50, dpi);
+        y += Scale(34, dpi);
 
         for (var dayIndex = 0; dayIndex < 7; dayIndex++)
         {
@@ -318,27 +353,70 @@ internal static class UsageHoverCardRenderer
         }
     }
 
-    private static void DrawWeekNavigationButton(
+    private static void DrawWeekNavigationControl(
         Graphics graphics,
         Rectangle bounds,
+        Rectangle previousBounds,
+        Rectangle currentBounds,
+        Rectangle nextBounds,
         int dpi,
-        string text,
-        bool selected)
+        HoverCardContent content)
     {
-        FillRoundedRectangle(graphics, bounds, Scale(4, dpi),
-            selected ? Color.FromArgb(45, 73, 105) : Surface);
-        using var borderPath = RoundedRectangle(bounds, Scale(4, dpi));
-        using var borderPen = new Pen(selected ? Blue : Border, ScaleF(1, dpi));
-        graphics.DrawPath(borderPen, borderPath);
-        using var font = Font(7.2F, selected ? FontStyle.Bold : FontStyle.Regular, dpi);
-        using var brush = new SolidBrush(selected ? PrimaryText : SecondaryText);
+        var radius = Scale(6, dpi);
+        FillRoundedRectangle(graphics, bounds, radius, Color.FromArgb(28, 32, 39));
+        using var groupPath = RoundedRectangle(bounds, radius);
+        var saved = graphics.Save();
+        graphics.SetClip(groupPath);
+        if (content.WeekOffset == 0)
+        {
+            using var selectedBrush = new SolidBrush(Color.FromArgb(43, 68, 101));
+            graphics.FillRectangle(selectedBrush, currentBounds);
+        }
+
+        var hoveredBounds = content.HoveredWeekNavigation switch
+        {
+            ScheduleWeekNavigation.Previous => previousBounds,
+            ScheduleWeekNavigation.Current => currentBounds,
+            ScheduleWeekNavigation.Next => nextBounds,
+            _ => Rectangle.Empty
+        };
+        if (!hoveredBounds.IsEmpty)
+        {
+            using var hoverBrush = new SolidBrush(Color.FromArgb(48, 55, 67));
+            graphics.FillRectangle(hoverBrush, hoveredBounds);
+        }
+        graphics.Restore(saved);
+
+        using var borderPen = new Pen(content.HoveredWeekNavigation is null
+            ? Border
+            : Color.FromArgb(79, 91, 110), ScaleF(1, dpi));
+        graphics.DrawPath(borderPen, groupPath);
+        using var separatorPen = new Pen(Border, ScaleF(1, dpi));
+        graphics.DrawLine(separatorPen, previousBounds.Right, bounds.Top + Scale(5, dpi),
+            previousBounds.Right, bounds.Bottom - Scale(5, dpi));
+        graphics.DrawLine(separatorPen, currentBounds.Right, bounds.Top + Scale(5, dpi),
+            currentBounds.Right, bounds.Bottom - Scale(5, dpi));
+
+        using var arrowFont = Font(10F, FontStyle.Regular, dpi);
+        using var labelFont = Font(7.2F,
+            content.WeekOffset == 0 ? FontStyle.Bold : FontStyle.Regular, dpi);
+        using var arrowBrush = new SolidBrush(content.HoveredWeekNavigation is
+            ScheduleWeekNavigation.Previous or ScheduleWeekNavigation.Next
+            ? PrimaryText
+            : SecondaryText);
+        using var labelBrush = new SolidBrush(content.WeekOffset == 0 ||
+                                              content.HoveredWeekNavigation == ScheduleWeekNavigation.Current
+            ? PrimaryText
+            : SecondaryText);
         using var centered = new StringFormat
         {
             Alignment = StringAlignment.Center,
             LineAlignment = StringAlignment.Center,
             FormatFlags = StringFormatFlags.NoWrap
         };
-        graphics.DrawString(text, font, brush, bounds, centered);
+        graphics.DrawString("‹", arrowFont, arrowBrush, previousBounds, centered);
+        graphics.DrawString("本周", labelFont, labelBrush, currentBounds, centered);
+        graphics.DrawString("›", arrowFont, arrowBrush, nextBounds, centered);
     }
 
     private static void DrawDayRow(
