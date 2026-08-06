@@ -53,7 +53,6 @@ internal sealed class TaskbarToolbarForm : Form
     private Bitmap? _toolTipFrame;
 
     public event EventHandler? DetailsRequested;
-    public event EventHandler? SettingsRequested;
     public event EventHandler<bool>? AttachmentChanged;
 
     public bool IsAttached { get; private set; }
@@ -581,12 +580,6 @@ internal sealed class TaskbarToolbarForm : Form
         }
 
         base.OnMouseUp(e);
-    }
-
-    protected override void OnDoubleClick(EventArgs e)
-    {
-        SettingsRequested?.Invoke(this, EventArgs.Empty);
-        base.OnDoubleClick(e);
     }
 
     protected override void Dispose(bool disposing)

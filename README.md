@@ -20,7 +20,7 @@
 
 ## 配置
 
-启动后双击工具条或通过右键菜单打开设置，填写 Plane 工作区视图地址，例如：
+启动后通过工具条右键菜单打开设置，填写 Plane 工作区视图地址，例如：
 
 ```text
 https://plane.example.com/workspace-slug/workspace-views/view-id

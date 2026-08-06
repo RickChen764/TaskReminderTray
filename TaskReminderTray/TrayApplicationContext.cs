@@ -98,12 +98,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
             Text = "TaskReminderTray - 等待配置"
         };
-        _notifyIcon.DoubleClick += (_, _) => ShowSettings();
         UpdateIcon(null, TrayIconState.Loading);
 
         _toolbar = new TaskbarToolbarForm(_menu, avoidProcessName: "UsageTray");
         _toolbar.DetailsRequested += (_, _) => ToggleDetails();
-        _toolbar.SettingsRequested += (_, _) => ShowSettings();
         _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
         _notificationForm.AcknowledgeRequested += (_, notificationId) =>
             AcknowledgeNotification(notificationId);
