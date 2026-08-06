@@ -117,8 +117,11 @@ internal sealed class TaskbarToolbarForm : Form
         _hoverContent = hoverContent;
         _statusColor = statusColor;
         _toolTip.SetToolTip(this, _hoverEnabled ? hoverContent.ToPlainText() : null);
-        UpdateDesiredToolbarWidth();
-        AttachOrReposition(force: true);
+        var widthChanged = UpdateDesiredToolbarWidth();
+        if (!IsAttached || widthChanged)
+        {
+            AttachOrReposition(force: true);
+        }
         Invalidate();
     }
 
@@ -510,11 +513,11 @@ internal sealed class TaskbarToolbarForm : Form
         e.Graphics.DrawString(_displayText, font, textBrush, textBounds, format);
     }
 
-    private void UpdateDesiredToolbarWidth()
+    private bool UpdateDesiredToolbarWidth()
     {
         if (!IsHandleCreated)
         {
-            return;
+            return false;
         }
 
         using var graphics = CreateGraphics();
@@ -529,8 +532,15 @@ internal sealed class TaskbarToolbarForm : Form
 
         // 文字从 x=30 左右开始。高 DPI 下 CreateGraphics 与任务栏子窗口的
         // GDI 字形宽度会有少量偏差，因此额外保留约 14px 安全余量。
-        _desiredToolbarWidth = Math.Clamp(textWidth + 60,
+        var desiredWidth = Math.Clamp(textWidth + 60,
             MinimumToolbarWidth, MaximumToolbarWidth);
+        if (desiredWidth == _desiredToolbarWidth)
+        {
+            return false;
+        }
+
+        _desiredToolbarWidth = desiredWidth;
+        return true;
     }
 
     protected override void OnMouseEnter(EventArgs e)

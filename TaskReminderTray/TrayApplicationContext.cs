@@ -83,8 +83,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("退出", null, (_, _) => ExitThread());
         _dismissController = new ContextMenuDismissController(_menu);
-        _refreshItem.Click += async (_, _) => await RefreshAsync(showSuccess: true);
-        _refreshTimer.Tick += async (_, _) => await RefreshAsync(showSuccess: false);
+        _refreshItem.Click += async (_, _) => await RefreshAsync();
+        _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _updateItem.Click += async (_, _) => await UpdateMenuItem_ClickAsync();
         _manualDoNotDisturbItem.Click += (_, _) => ToggleManualDoNotDisturb();
         _manageDoNotDisturbItem.Click += (_, _) => ManageDoNotDisturbRanges();
@@ -146,7 +146,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (_settings.IsConfigured)
         {
-            _ = RefreshAsync(showSuccess: false);
+            _ = RefreshAsync();
         }
 
         _pendingNotifications = _notificationStore.LoadPending();
@@ -154,7 +154,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         ShowDuePersonalReminder();
     }
 
-    private async Task RefreshAsync(bool showSuccess)
+    private async Task RefreshAsync()
     {
         if (_refreshing || !_settings.IsConfigured)
         {
@@ -170,10 +170,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             NotifyChanges(issues);
             _lastIssues = issues;
             _lastError = null;
-            if (showSuccess)
-            {
-                ShowBalloon("刷新成功", $"读取到 {issues.Count} 个工作项。", ToolTipIcon.Info);
-            }
         }
         catch (Exception exception)
         {
@@ -386,7 +382,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _settingsStore.Save(form.Result);
             _settings = form.Result;
             ConfigureTimer();
-            _ = RefreshAsync(showSuccess: true);
+            _ = RefreshAsync();
         }
         catch (Exception exception)
         {
@@ -468,7 +464,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         ShowDuePersonalReminder();
         if (stateChanged)
         {
-            _ = RefreshAsync(showSuccess: false);
+            _ = RefreshAsync();
         }
     }
 
