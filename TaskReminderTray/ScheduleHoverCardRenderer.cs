@@ -224,6 +224,7 @@ internal static class UsageHoverCardRenderer
     {
         var size = Measure(content, dpi);
         var bitmap = new Bitmap(size.Width, size.Height);
+        bitmap.SetResolution(dpi, dpi);
         using var graphics = Graphics.FromImage(bitmap);
         Draw(graphics, new Rectangle(Point.Empty, size), dpi, content, interactions);
         return bitmap;
@@ -836,8 +837,16 @@ internal static class UsageHoverCardRenderer
         return path;
     }
 
-    private static Font Font(float size, FontStyle style, int dpi) =>
-        new("Microsoft YaHei UI", size * dpi / 96F, style, GraphicsUnit.Point);
+    internal static float FontPointSize(float dip) => dip * 72F / 96F;
+
+    private static Font Font(float size, FontStyle style, int dpi)
+    {
+        // size 使用 DIP（1/96 英寸），而 Font 的 Point 单位已经会由 GDI
+        // 按当前 Graphics.DpiX 换算成物理像素。这里不能再乘 dpi/96，
+        // 否则在 150%/200% 缩放下会发生二次放大并挤出固定列。
+        return new Font("Microsoft YaHei UI", FontPointSize(size), style,
+            GraphicsUnit.Point);
+    }
 
     private static int Scale(int value, int dpi) =>
         (int)Math.Round(value * dpi / 96F, MidpointRounding.AwayFromZero);

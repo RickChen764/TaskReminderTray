@@ -137,6 +137,33 @@ public sealed class HoverCardTests
         Assert.Equal(100F, atEndPause);
     }
 
+    [Theory]
+    [InlineData(12F, 9F)]
+    [InlineData(16F, 12F)]
+    [InlineData(20F, 15F)]
+    public void FontPointSize_ConvertsDipWithoutApplyingDpiTwice(
+        float dip, float expectedPoints)
+    {
+        Assert.Equal(expectedPoints, UsageHoverCardRenderer.FontPointSize(dip));
+    }
+
+    [Theory]
+    [InlineData(96, 760, 700)]
+    [InlineData(144, 1140, 1050)]
+    [InlineData(192, 1520, 1400)]
+    public void ScheduleCard_DpiScalingKeepsLogicalSizeStable(
+        int dpi, int expectedWidth, int expectedHeight)
+    {
+        var today = new DateOnly(2026, 8, 10);
+        var content = HoverCardContent.CreateSchedule(
+            ScheduleSummary.Create([], today, 2), today, DateTime.Now, Color.Green);
+
+        var size = UsageHoverCardRenderer.Measure(content, dpi);
+
+        Assert.Equal(expectedWidth, size.Width);
+        Assert.Equal(expectedHeight, size.Height);
+    }
+
     [Fact]
     public void ScheduleCard_ExpandingDayIncreasesHeightAndMapsEveryIssue()
     {
