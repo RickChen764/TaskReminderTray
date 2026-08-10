@@ -267,14 +267,14 @@ internal static class UsageHoverCardRenderer
         var weekEnd = weekStart.AddDays(6);
 
         using var headingFont = Font(18F, FontStyle.Bold, dpi);
-        using var sectionFont = Font(12F, FontStyle.Regular, dpi);
-        using var dayFont = Font(10F, FontStyle.Bold, dpi);
-        using var dateFont = Font(9F, FontStyle.Regular, dpi);
+        using var sectionFont = Font(13F, FontStyle.Regular, dpi);
+        using var dayFont = Font(11F, FontStyle.Bold, dpi);
+        using var dateFont = Font(10F, FontStyle.Regular, dpi);
         using var taskFont = Font(12.5F, FontStyle.Regular, dpi);
         using var taskBoldFont = Font(13F, FontStyle.Bold, dpi);
         using var focusTitleFont = Font(16F, FontStyle.Bold, dpi);
         using var focusMetaFont = Font(12F, FontStyle.Regular, dpi);
-        using var smallFont = Font(10F, FontStyle.Regular, dpi);
+        using var smallFont = Font(11F, FontStyle.Regular, dpi);
         using var primaryBrush = new SolidBrush(PrimaryText);
         using var secondaryBrush = new SolidBrush(SecondaryText);
         using var mutedBrush = new SolidBrush(MutedText);
@@ -492,8 +492,8 @@ internal static class UsageHoverCardRenderer
         graphics.DrawLine(separatorPen, currentBounds.Right, bounds.Top + Scale(5, dpi),
             currentBounds.Right, bounds.Bottom - Scale(5, dpi));
 
-        using var arrowFont = Font(10F, FontStyle.Regular, dpi);
-        using var labelFont = Font(7.2F,
+        using var arrowFont = Font(13F, FontStyle.Regular, dpi);
+        using var labelFont = Font(11F,
             content.WeekOffset == 0 ? FontStyle.Bold : FontStyle.Regular, dpi);
         using var arrowBrush = new SolidBrush(content.HoveredWeekNavigation is
             ScheduleWeekNavigation.Previous or ScheduleWeekNavigation.Next

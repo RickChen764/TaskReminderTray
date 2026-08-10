@@ -1,5 +1,6 @@
 using System.Drawing.Drawing2D;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using TaskReminderTray.Models;
 using TaskReminderTray.Services;
 using UsageTray;
@@ -12,6 +13,8 @@ namespace TaskReminderTray;
 /// </summary>
 internal sealed class ScheduleDetailsForm : Form
 {
+    private const int DwmWindowCornerPreference = 33;
+    private const int DwmWindowCornerRound = 2;
     private readonly DetailsSurface _surface = new();
     private bool _allowDeactivateClose = true;
     private Rectangle _anchorBounds;
@@ -140,34 +143,35 @@ internal sealed class ScheduleDetailsForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        UpdateRoundedRegion();
+        EnableSystemRoundedCorners();
     }
 
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        UpdateRoundedRegion();
+        EnableSystemRoundedCorners();
     }
 
-    private void UpdateRoundedRegion()
+    private void EnableSystemRoundedCorners()
     {
-        if (Width <= 0 || Height <= 0)
+        if (!IsHandleCreated)
         {
             return;
         }
 
-        using var path = new GraphicsPath();
-        var radius = Math.Max(6, (int)Math.Round(8 * DeviceDpi / 96F));
-        var diameter = radius * 2;
-        var bounds = new Rectangle(0, 0, Width, Height);
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
+        // WinForms Region 是 1-bit 硬裁剪，高 DPI 下圆角边缘会出现黑色锯齿。
+        // Windows 11 由 DWM 合成抗锯齿圆角；旧系统失败时保持矩形，
+        // 也比带黑边的硬裁剪更稳定。
         Region?.Dispose();
-        Region = new Region(path);
+        Region = null;
+        var preference = DwmWindowCornerRound;
+        _ = DwmSetWindowAttribute(Handle, DwmWindowCornerPreference,
+            ref preference, sizeof(int));
     }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr window, int attribute, ref int value, int valueSize);
 
     private sealed class DetailsSurface : Control
     {
@@ -503,6 +507,7 @@ internal sealed class ScheduleDetailsForm : Form
                     _copied = false;
                     Invalidate();
                 };
+                SizeChanged += (_, _) => UpdateRoundedRegion();
             }
 
             public void ShowCopiedFeedback()
@@ -571,6 +576,18 @@ internal sealed class ScheduleDetailsForm : Form
                     e.Graphics.DrawLine(pen, box.Left + 5, box.Top + 4,
                         box.Right + 3, box.Top - 3);
                 }
+            }
+
+            private void UpdateRoundedRegion()
+            {
+                if (Width <= 0 || Height <= 0)
+                {
+                    return;
+                }
+
+                using var path = RoundedButton(ClientRectangle, 6);
+                Region?.Dispose();
+                Region = new Region(path);
             }
 
             protected override void Dispose(bool disposing)
