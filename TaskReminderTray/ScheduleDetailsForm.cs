@@ -450,6 +450,7 @@ internal sealed class ScheduleDetailsForm : Form
             }
 
             CopyText(PersonalWorkStore.FormatIssueInformation(issue));
+            button.ShowCopiedFeedback();
             _toolTip.Show("已复制单信息", button, button.Width / 2, -28, 1300);
         }
 
@@ -478,6 +479,12 @@ internal sealed class ScheduleDetailsForm : Form
 
         private sealed class IssueActionButton : Button
         {
+            private readonly System.Windows.Forms.Timer _feedbackTimer = new()
+            {
+                Interval = 1000
+            };
+            private bool _copied;
+
             public IssueItem? Issue { get; set; }
             public IssueAction Action { get; set; }
 
@@ -485,16 +492,30 @@ internal sealed class ScheduleDetailsForm : Form
             {
                 FlatStyle = FlatStyle.Flat;
                 FlatAppearance.BorderSize = 0;
-                BackColor = Color.FromArgb(35, 41, 51);
-                ForeColor = Color.FromArgb(184, 194, 210);
+                BackColor = Color.FromArgb(31, 35, 43);
+                ForeColor = Color.FromArgb(201, 208, 220);
                 Cursor = Cursors.Hand;
                 UseVisualStyleBackColor = false;
                 SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+                _feedbackTimer.Tick += (_, _) =>
+                {
+                    _feedbackTimer.Stop();
+                    _copied = false;
+                    Invalidate();
+                };
+            }
+
+            public void ShowCopiedFeedback()
+            {
+                _copied = true;
+                _feedbackTimer.Stop();
+                _feedbackTimer.Start();
+                Invalidate();
             }
 
             protected override void OnMouseEnter(EventArgs e)
             {
-                BackColor = Color.FromArgb(88, 142, 238);
+                BackColor = Color.FromArgb(42, 48, 58);
                 ForeColor = Color.White;
                 Invalidate();
                 base.OnMouseEnter(e);
@@ -502,8 +523,8 @@ internal sealed class ScheduleDetailsForm : Form
 
             protected override void OnMouseLeave(EventArgs e)
             {
-                BackColor = Color.FromArgb(35, 41, 51);
-                ForeColor = Color.FromArgb(184, 194, 210);
+                BackColor = Color.FromArgb(31, 35, 43);
+                ForeColor = Color.FromArgb(201, 208, 220);
                 Invalidate();
                 base.OnMouseLeave(e);
             }
@@ -513,9 +534,26 @@ internal sealed class ScheduleDetailsForm : Form
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 using var path = RoundedButton(ClientRectangle, 5);
                 using var brush = new SolidBrush(BackColor);
-                using var pen = new Pen(ForeColor, 1.2F);
+                using var borderPen = new Pen(Focused || ClientRectangle.Contains(PointToClient(Cursor.Position))
+                    ? Color.FromArgb(91, 141, 239)
+                    : Color.FromArgb(58, 65, 78), Focused ? 2F : 1F);
+                using var pen = new Pen(_copied ? Color.FromArgb(57, 199, 127) : ForeColor, 1.4F)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round
+                };
                 e.Graphics.FillPath(brush, path);
-                if (Action == IssueAction.Copy)
+                e.Graphics.DrawPath(borderPen, path);
+                if (_copied)
+                {
+                    var centerX = Width / 2;
+                    var centerY = Height / 2;
+                    e.Graphics.DrawLine(pen, centerX - 5, centerY,
+                        centerX - 1, centerY + 4);
+                    e.Graphics.DrawLine(pen, centerX - 1, centerY + 4,
+                        centerX + 6, centerY - 5);
+                }
+                else if (Action == IssueAction.Copy)
                 {
                     var left = (Width - 8) / 2;
                     var top = (Height - 8) / 2;
@@ -533,6 +571,17 @@ internal sealed class ScheduleDetailsForm : Form
                     e.Graphics.DrawLine(pen, box.Left + 5, box.Top + 4,
                         box.Right + 3, box.Top - 3);
                 }
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _feedbackTimer.Stop();
+                    _feedbackTimer.Dispose();
+                }
+
+                base.Dispose(disposing);
             }
 
             private static GraphicsPath RoundedButton(Rectangle bounds, int radius)

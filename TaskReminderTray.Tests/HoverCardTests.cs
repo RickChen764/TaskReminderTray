@@ -30,8 +30,9 @@ public sealed class HoverCardTests
         using var graphics = Graphics.FromImage(bitmap);
         UsageHoverCardRenderer.Draw(graphics, new Rectangle(Point.Empty, size), 96, content);
 
-        Assert.Equal(540, size.Width);
-        Assert.Equal(424, size.Height);
+        Assert.Equal(760, size.Width);
+        Assert.Equal(700, size.Height);
+
         Assert.NotEqual(bitmap.GetPixel(size.Width / 2, size.Height / 2), Color.Empty);
         Assert.Contains("任务", content.ToPlainText());
         Assert.Contains("APP-87", content.ToPlainText());

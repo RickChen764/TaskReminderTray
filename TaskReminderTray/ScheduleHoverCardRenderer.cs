@@ -34,6 +34,10 @@ internal sealed class HoverCardContent
     public IReadOnlyList<IssueItem> GetDisplayedIssuesForDate(DateOnly date) =>
         Summary?.GetIssuesForDate(date, includeCompleted: WeekOffset < 0) ?? [];
 
+    public IssueItem? FocusIssue => Summary?.Issues.FirstOrDefault(issue =>
+        !issue.IsCompleted && string.Equals(issue.Id, FocusIssueId,
+            StringComparison.OrdinalIgnoreCase)) ?? Summary?.CurrentFocus;
+
     public static HoverCardContent CreateStatus(
         string title,
         string message,
@@ -139,15 +143,18 @@ internal sealed class ScheduleInteractionMap
         Issues.Clear();
         Expanders.Clear();
         WeekNavigation.Clear();
+        FocusIssue = null;
     }
+
+    public ScheduleIssueRegion? FocusIssue { get; set; }
 }
 
 internal static class UsageHoverCardRenderer
 {
-    private const int LogicalWidth = 540;
-    private const int StatusWidth = 450;
+    private const int LogicalWidth = 760;
+    private const int StatusWidth = 560;
     private const int Padding = 16;
-    private const int DayRowHeight = 38;
+    private const int DayRowHeight = 40;
     private const int ExpandedIssueRowHeight = 28;
 
     private static readonly Color Background = Color.FromArgb(24, 27, 33);
@@ -172,10 +179,9 @@ internal static class UsageHoverCardRenderer
         }
 
         var expandedExtra = 0;
-        var weekStart = content.DisplayedWeekStart;
-        var weekEnd = weekStart.AddDays(6);
         foreach (var date in content.ExpandedDates.Where(date =>
-                     date >= weekStart && date <= weekEnd))
+                     date >= content.DisplayedWeekStart &&
+                     date <= content.DisplayedWeekStart.AddDays(6)))
         {
             var count = content.GetDisplayedIssuesForDate(date).Count;
             if (count > 1)
@@ -184,8 +190,8 @@ internal static class UsageHoverCardRenderer
             }
         }
 
-        // 周切换已收入标题栏，不额外占用任务列表空间。
-        return new Size(Scale(LogicalWidth, dpi), Scale(424 + expandedExtra, dpi));
+        // 标题栏 + 当前重点 + 周列表 + 接下来 + 弱化摘要。
+        return new Size(Scale(LogicalWidth, dpi), Scale(700 + expandedExtra, dpi));
     }
 
     public static void Draw(
@@ -255,67 +261,58 @@ internal static class UsageHoverCardRenderer
         var padding = Scale(Padding, dpi);
         var x = bounds.Left + padding;
         var width = bounds.Width - padding * 2;
-        var y = bounds.Top + Scale(13, dpi);
+        var y = bounds.Top + Scale(12, dpi);
         var weekStart = content.DisplayedWeekStart;
         var weekEnd = weekStart.AddDays(6);
 
-        using var headingFont = Font(10.5F, FontStyle.Bold, dpi);
-        using var dayFont = Font(8F, FontStyle.Bold, dpi);
-        using var dateFont = Font(7.5F, FontStyle.Regular, dpi);
-        using var taskFont = Font(8.5F, FontStyle.Regular, dpi);
-        using var taskBoldFont = Font(8.5F, FontStyle.Bold, dpi);
-        using var smallFont = Font(7.3F, FontStyle.Regular, dpi);
+        using var headingFont = Font(18F, FontStyle.Bold, dpi);
+        using var sectionFont = Font(12F, FontStyle.Regular, dpi);
+        using var dayFont = Font(10F, FontStyle.Bold, dpi);
+        using var dateFont = Font(9F, FontStyle.Regular, dpi);
+        using var taskFont = Font(12.5F, FontStyle.Regular, dpi);
+        using var taskBoldFont = Font(13F, FontStyle.Bold, dpi);
+        using var focusTitleFont = Font(16F, FontStyle.Bold, dpi);
+        using var focusMetaFont = Font(12F, FontStyle.Regular, dpi);
+        using var smallFont = Font(10F, FontStyle.Regular, dpi);
         using var primaryBrush = new SolidBrush(PrimaryText);
         using var secondaryBrush = new SolidBrush(SecondaryText);
         using var mutedBrush = new SolidBrush(MutedText);
 
-        var dateWidth = Scale(92, dpi);
-        var navigationWidth = Scale(106, dpi);
-        var navigationHeight = Scale(27, dpi);
-        var navigationRight = x + width - dateWidth - Scale(10, dpi);
-        var navigationBounds = new Rectangle(
-            navigationRight - navigationWidth,
-            y + Scale(1, dpi),
-            navigationWidth,
-            navigationHeight);
-        var titleBounds = new RectangleF(x, y,
-            Math.Max(Scale(120, dpi), navigationBounds.Left - x - Scale(12, dpi)),
-            Scale(25, dpi));
-        using (var titleFormat = new StringFormat
-               {
-                   Trimming = StringTrimming.EllipsisCharacter,
-                   FormatFlags = StringFormatFlags.NoWrap,
-                   LineAlignment = StringAlignment.Center
-               })
-        {
-            graphics.DrawString("开发安排", headingFont, primaryBrush,
-                titleBounds, titleFormat);
-        }
-        using (var right = new StringFormat { Alignment = StringAlignment.Far })
-        {
-            graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
-                new RectangleF(x + width - dateWidth, y - Scale(1, dpi),
-                    dateWidth, Scale(19, dpi)), right);
-            graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
-                new RectangleF(x + width - dateWidth, y + Scale(17, dpi),
-                    dateWidth, Scale(15, dpi)), right);
-        }
-        var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
-            Scale(28, dpi), navigationBounds.Height);
-        var currentBounds = new Rectangle(previousBounds.Right, navigationBounds.Top,
-            Scale(50, dpi), navigationBounds.Height);
-        var nextBounds = new Rectangle(currentBounds.Right, navigationBounds.Top,
-            navigationBounds.Right - currentBounds.Right, navigationBounds.Height);
-        DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
-            currentBounds, nextBounds, dpi, content);
-        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
-            previousBounds, ScheduleWeekNavigation.Previous));
-        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
-            currentBounds, ScheduleWeekNavigation.Current));
-        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
-            nextBounds, ScheduleWeekNavigation.Next));
-        y += Scale(34, dpi);
+        DrawHeader(graphics, x, width, y, dpi, content, weekStart, weekEnd,
+            headingFont, taskFont, smallFont, primaryBrush, secondaryBrush, mutedBrush,
+            interactions);
+        y += Scale(52, dpi);
 
+        var focus = content.FocusIssue;
+        DrawSectionLabel(graphics, "当前重点", x, y, dpi, sectionFont, mutedBrush);
+        y += Scale(20, dpi);
+        y += Scale(6, dpi);
+        var focusBounds = new Rectangle(x, y, width, Scale(84, dpi));
+        DrawFocusCard(graphics, focusBounds, dpi, focus, content, focusTitleFont,
+            focusMetaFont, smallFont, interactions);
+        y += focusBounds.Height + Scale(6, dpi);
+
+        DrawSectionLabel(graphics, "本周工作安排", x, y, dpi, sectionFont, mutedBrush);
+        y += Scale(20, dpi);
+        y += Scale(6, dpi);
+        var listTop = y;
+        var listExtra = 0;
+        for (var index = 0; index < 7; index++)
+        {
+            var date = weekStart.AddDays(index);
+            var count = content.GetDisplayedIssuesForDate(date).Count;
+            if (count > 1 && content.ExpandedDates.Contains(date))
+            {
+                listExtra += 8 + (count - 1) * ExpandedIssueRowHeight;
+            }
+        }
+        var listHeight = Scale(7 * DayRowHeight + listExtra, dpi);
+        using var listPath = RoundedRectangle(new Rectangle(x, y, width,
+            listHeight), Scale(9, dpi));
+        using var listBrush = new SolidBrush(Color.FromArgb(29, 33, 40));
+        graphics.FillPath(listBrush, listPath);
+        using var listPen = new Pen(Border, ScaleF(1, dpi));
+        graphics.DrawPath(listPen, listPath);
         for (var dayIndex = 0; dayIndex < 7; dayIndex++)
         {
             var date = weekStart.AddDays(dayIndex);
@@ -332,15 +329,25 @@ internal static class UsageHoverCardRenderer
             y += Scale(logicalHeight, dpi);
         }
 
-        y += Scale(9, dpi);
+        y = listTop + listHeight + Scale(8, dpi);
+        using var nextLabelBrush = new SolidBrush(Blue);
+        DrawSectionLabel(graphics, "接下来", x, y, dpi, sectionFont, nextLabelBrush);
         var next = summary.GetNextDevelopmentAfter(weekEnd);
-        DrawNext(graphics, new Rectangle(x, y, width, Scale(56, dpi)), dpi,
+        var nextDate = next?.StartDate ?? next?.DueDate;
+        using (var right = new StringFormat { Alignment = StringAlignment.Far })
+        {
+            graphics.DrawString(nextDate?.ToString("M/d") ?? string.Empty, smallFont, mutedBrush,
+                new RectangleF(x, y, width, Scale(22, dpi)), right);
+        }
+        y += Scale(20, dpi);
+        y += Scale(6, dpi);
+        DrawNext(graphics, new Rectangle(x, y, width, Scale(62, dpi)), dpi,
             next, taskFont, taskBoldFont, smallFont, animationMilliseconds,
             interactions);
-        y += Scale(65, dpi);
+        y += Scale(76, dpi);
 
-        var overview = new Rectangle(x, y, width, Scale(27, dpi));
-        FillRoundedRectangle(graphics, overview, Scale(5, dpi), Surface);
+        var overview = new Rectangle(x, y, width, Scale(34, dpi));
+        FillRoundedRectangle(graphics, overview, Scale(7, dpi), Surface);
         var overviewText = $"待跟进 {summary.FollowUpCount}   ·   " +
                            $"等待输入 {summary.WaitingCount}   ·   Bug {summary.BugCount}";
         using (var centered = new StringFormat
@@ -349,7 +356,94 @@ internal static class UsageHoverCardRenderer
                    LineAlignment = StringAlignment.Center
                })
         {
-            graphics.DrawString(overviewText, smallFont, mutedBrush, overview, centered);
+            using var overviewFont = Font(12F, FontStyle.Regular, dpi);
+            graphics.DrawString(overviewText, overviewFont, mutedBrush, overview, centered);
+        }
+    }
+
+    private static void DrawHeader(Graphics graphics, int x, int width, int y, int dpi,
+        HoverCardContent content, DateOnly weekStart, DateOnly weekEnd,
+        Font headingFont, Font taskFont, Font smallFont, Brush primaryBrush,
+        Brush secondaryBrush, Brush mutedBrush, ScheduleInteractionMap? interactions)
+    {
+        var dateWidth = Scale(116, dpi);
+        var navigationWidth = Scale(152, dpi);
+        var navigationBounds = new Rectangle(x + (width - navigationWidth) / 2,
+            y, navigationWidth, Scale(32, dpi));
+        var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
+            Scale(40, dpi), navigationBounds.Height);
+        var currentBounds = new Rectangle(previousBounds.Right, navigationBounds.Top,
+            Scale(72, dpi), navigationBounds.Height);
+        var nextBounds = new Rectangle(currentBounds.Right, navigationBounds.Top,
+            Scale(40, dpi), navigationBounds.Height);
+        graphics.DrawString("开发安排", headingFont, primaryBrush,
+            new RectangleF(x, y + Scale(2, dpi),
+                navigationBounds.Left - x - Scale(18, dpi), Scale(29, dpi)));
+        using var right = new StringFormat { Alignment = StringAlignment.Far };
+        graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
+            new RectangleF(x + width - dateWidth, y, dateWidth, Scale(21, dpi)), right);
+        graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
+            new RectangleF(x + width - dateWidth, y + Scale(20, dpi), dateWidth,
+                Scale(16, dpi)), right);
+        DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
+            currentBounds, nextBounds, dpi, content);
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            previousBounds, ScheduleWeekNavigation.Previous));
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            currentBounds, ScheduleWeekNavigation.Current));
+        interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
+            nextBounds, ScheduleWeekNavigation.Next));
+    }
+
+    private static void DrawSectionLabel(Graphics graphics, string text, int x, int y,
+        int dpi, Font font, Brush brush) => graphics.DrawString(text, font, brush,
+        new RectangleF(x, y, Scale(240, dpi), Scale(21, dpi)));
+
+    private static void DrawFocusCard(Graphics graphics, Rectangle bounds, int dpi,
+        IssueItem? issue, HoverCardContent content, Font titleFont, Font metaFont,
+        Font smallFont, ScheduleInteractionMap? interactions)
+    {
+        FillRoundedRectangle(graphics, bounds, Scale(10, dpi), Color.FromArgb(32, 38, 46));
+        using var path = RoundedRectangle(bounds, Scale(10, dpi));
+        using var borderPen = new Pen(Color.FromArgb(150, Green), ScaleF(1, dpi));
+        graphics.DrawPath(borderPen, path);
+        using var accent = new SolidBrush(Green);
+        graphics.FillRectangle(accent, bounds.Left, bounds.Top, Scale(4, dpi), bounds.Height);
+        if (issue is null)
+        {
+            using var empty = new SolidBrush(MutedText);
+            graphics.DrawString("暂无当前重点", metaFont, empty,
+                bounds.Left + Scale(16, dpi), bounds.Top + Scale(31, dpi));
+            return;
+        }
+
+        var buttonWidth = Scale(28, dpi);
+        var copyBounds = new Rectangle(bounds.Right - Scale(16, dpi) - buttonWidth,
+            bounds.Top + Scale(29, dpi), buttonWidth, buttonWidth);
+        var openBounds = new Rectangle(copyBounds.Left - Scale(8, dpi) - buttonWidth,
+            copyBounds.Top, buttonWidth, buttonWidth);
+        var stateBounds = new Rectangle(openBounds.Left - Scale(16, dpi) - Scale(96, dpi),
+            bounds.Top + Scale(30, dpi), Scale(96, dpi), Scale(24, dpi));
+        var titleBounds = new RectangleF(bounds.Left + Scale(16, dpi),
+            bounds.Top + Scale(14, dpi),
+            Math.Max(40, stateBounds.Left - bounds.Left - Scale(24, dpi)), Scale(25, dpi));
+        using var titleBrush = new SolidBrush(PrimaryText);
+        DrawIssueTitle(graphics, issue, titleFont, titleBrush, titleBounds, dpi,
+            content.GetAnimationElapsedMilliseconds());
+        var meta = $"{ShortStatus(issue.Status)}  ·  优先级 {issue.Priority}  ·  预计 {(issue.DueDate ?? issue.StartDate)?.ToString("M/d") ?? "未排期"}";
+        using var metaBrush = new SolidBrush(Color.FromArgb(145, 156, 175));
+        graphics.DrawString(meta, metaFont, metaBrush,
+            bounds.Left + Scale(16, dpi), bounds.Top + Scale(52, dpi));
+        using var stateBrush = new SolidBrush(Green);
+        using var stateFormat = new StringFormat { Alignment = StringAlignment.Far,
+            LineAlignment = StringAlignment.Center };
+        graphics.DrawString("今日重点", smallFont, stateBrush, stateBounds, stateFormat);
+        if (interactions is not null)
+        {
+            var region = new ScheduleIssueRegion(Rectangle.Round(titleBounds), stateBounds,
+                openBounds, copyBounds, issue);
+            interactions.Issues.Add(region);
+            interactions.FocusIssue = region;
         }
     }
 
@@ -438,31 +532,37 @@ internal static class UsageHoverCardRenderer
     {
         if (isToday)
         {
-            FillRoundedRectangle(graphics, bounds, Scale(6, dpi), SurfaceAlt);
-            using var borderPath = RoundedRectangle(bounds, Scale(6, dpi));
-            using var todayPen = new Pen(Color.FromArgb(90, Green), ScaleF(1, dpi));
-            graphics.DrawPath(todayPen, borderPath);
+            using var todayBrush = new SolidBrush(SurfaceAlt);
+            graphics.FillRectangle(todayBrush, bounds);
+            using var accentBrush = new SolidBrush(Green);
+            graphics.FillRectangle(accentBrush, bounds.Left, bounds.Top,
+                Scale(3, dpi), bounds.Height);
         }
-        else if (((int)date.DayOfWeek & 1) == 0)
+        else if (issues.Count == 0)
         {
-            FillRoundedRectangle(graphics, bounds, Scale(4, dpi), Surface);
+            using var emptyBrush = new SolidBrush(Color.FromArgb(27, 31, 38));
+            graphics.FillRectangle(emptyBrush, bounds);
         }
+        using var separatorPen = new Pen(Color.FromArgb(48, 54, 65), ScaleF(1, dpi));
+        graphics.DrawLine(separatorPen, bounds.Left, bounds.Bottom - 1,
+            bounds.Right, bounds.Bottom - 1);
 
-        var labelWidth = Scale(57, dpi);
-        var metaWidth = Scale(122, dpi);
+        var labelWidth = Scale(68, dpi);
+        var metaWidth = Scale(88, dpi);
+        var actionsWidth = Scale(68, dpi);
         using var dayBrush = new SolidBrush(isToday ? Green : SecondaryText);
         using var dateBrush = new SolidBrush(isToday ? Green : MutedText);
         var weekday = new[] { "周日", "周一", "周二", "周三", "周四", "周五", "周六" }[(int)date.DayOfWeek];
         graphics.DrawString(weekday, dayFont, dayBrush,
-            bounds.Left + Scale(8, dpi), bounds.Top + Scale(5, dpi));
+            bounds.Left + Scale(16, dpi), bounds.Top + Scale(7, dpi));
         graphics.DrawString(date.ToString("M/d"), dateFont, dateBrush,
-            bounds.Left + Scale(8, dpi), bounds.Top + Scale(20, dpi));
+            bounds.Left + Scale(16, dpi), bounds.Top + Scale(24, dpi));
 
         if (issues.Count == 0)
         {
             using var mutedBrush = new SolidBrush(MutedText);
             graphics.DrawString("暂无安排", taskFont, mutedBrush,
-                bounds.Left + labelWidth, bounds.Top + Scale(11, dpi));
+                bounds.Left + labelWidth + Scale(20, dpi), bounds.Top + Scale(14, dpi));
             return;
         }
 
@@ -478,25 +578,26 @@ internal static class UsageHoverCardRenderer
                 StringComparison.OrdinalIgnoreCase);
             var rowTop = expanded
                 ? bounds.Top + Scale(5 + index * ExpandedIssueRowHeight, dpi)
-                : bounds.Top + Scale(9, dpi);
-            using var priorityBrush = new SolidBrush(PriorityColor(issue.Priority));
+                : bounds.Top + Scale(10, dpi);
+            using var priorityBrush = new SolidBrush(
+                string.Equals(issue.Id, content.FocusIssueId, StringComparison.OrdinalIgnoreCase) ||
+                isToday ? Green : TaskStatusColor(issue));
             using var titleBrush = new SolidBrush(focused || isToday ? PrimaryText : SecondaryText);
             using var metaBrush = new SolidBrush(issue.Stage == WorkStage.FollowUp ? Orange : MutedText);
-            graphics.FillEllipse(priorityBrush, bounds.Left + labelWidth,
-                rowTop + Scale(7, dpi), Scale(6, dpi), Scale(6, dpi));
-            var textLeft = bounds.Left + labelWidth + Scale(12, dpi);
-            var actionsWidth = Scale(58, dpi);
+            graphics.FillEllipse(priorityBrush, bounds.Left + labelWidth + Scale(9, dpi),
+                rowTop + Scale(9, dpi), Scale(8, dpi), Scale(8, dpi));
+            var textLeft = bounds.Left + labelWidth + Scale(28, dpi);
             var textWidth = Math.Max(20,
-                bounds.Width - labelWidth - metaWidth - actionsWidth - Scale(12, dpi));
+                bounds.Width - labelWidth - metaWidth - actionsWidth - Scale(48, dpi));
             var titleBounds = new Rectangle(textLeft, rowTop,
                 textWidth, Scale(21, dpi));
             DrawIssueTitle(graphics, issue, focused || isToday ? taskBoldFont : taskFont,
                 titleBrush, titleBounds, dpi, animationMilliseconds);
 
-            var buttonWidth = Scale(26, dpi);
-            var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(5, dpi),
-                rowTop - Scale(3, dpi), buttonWidth, Scale(25, dpi));
-            var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(4, dpi),
+            var buttonWidth = Scale(28, dpi);
+            var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(10, dpi),
+                rowTop - Scale(2, dpi), buttonWidth, buttonWidth);
+            var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(8, dpi),
                 copyBounds.Top, buttonWidth, copyBounds.Height);
 
             var meta = focused
@@ -516,8 +617,8 @@ internal static class UsageHoverCardRenderer
                 Trimming = StringTrimming.EllipsisCharacter,
                 FormatFlags = StringFormatFlags.NoWrap
             };
-            var metaBounds = new Rectangle(bounds.Right - metaWidth - actionsWidth,
-                rowTop + Scale(2, dpi), metaWidth - Scale(4, dpi), Scale(18, dpi));
+            var metaBounds = new Rectangle(openBounds.Left - Scale(12, dpi) - metaWidth,
+                rowTop + Scale(3, dpi), metaWidth, Scale(22, dpi));
             graphics.DrawString(meta, smallFont, metaBrush, metaBounds, right);
             interactions?.Issues.Add(new ScheduleIssueRegion(titleBounds, metaBounds,
                 openBounds, copyBounds, issue));
@@ -539,43 +640,38 @@ internal static class UsageHoverCardRenderer
         long animationMilliseconds,
         ScheduleInteractionMap? interactions)
     {
-        FillRoundedRectangle(graphics, bounds, Scale(6, dpi), Surface);
-        using var labelBrush = new SolidBrush(Blue);
+        FillRoundedRectangle(graphics, bounds, Scale(10, dpi), Color.FromArgb(31, 36, 44));
+        using var cardPath = RoundedRectangle(bounds, Scale(10, dpi));
+        using var cardPen = new Pen(Border, ScaleF(1, dpi));
+        graphics.DrawPath(cardPen, cardPath);
         using var primaryBrush = new SolidBrush(PrimaryText);
         using var secondaryBrush = new SolidBrush(SecondaryText);
         using var mutedBrush = new SolidBrush(MutedText);
-        graphics.DrawString("接下来", smallFont, labelBrush,
-            bounds.Left + Scale(11, dpi), bounds.Top + Scale(7, dpi));
         if (issue is null)
         {
             graphics.DrawString("暂无后续开发任务", taskFont, mutedBrush,
-                bounds.Left + Scale(11, dpi), bounds.Top + Scale(28, dpi));
+                bounds.Left + Scale(16, dpi), bounds.Top + Scale(21, dpi));
             return;
         }
 
         using var right = new StringFormat { Alignment = StringAlignment.Far };
-        var date = issue.StartDate ?? issue.DueDate;
-        graphics.DrawString(date?.ToString("M/d") ?? "未排期", smallFont, mutedBrush,
-            new RectangleF(bounds.Left, bounds.Top + Scale(7, dpi),
-                bounds.Width - Scale(11, dpi), Scale(17, dpi)), right);
-        var buttonWidth = Scale(26, dpi);
-        var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(8, dpi),
-            bounds.Top + Scale(25, dpi), buttonWidth, Scale(25, dpi));
-        var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(4, dpi),
+        var buttonWidth = Scale(28, dpi);
+        var copyBounds = new Rectangle(bounds.Right - buttonWidth - Scale(14, dpi),
+            bounds.Top + Scale(18, dpi), buttonWidth, buttonWidth);
+        var openBounds = new Rectangle(copyBounds.Left - buttonWidth - Scale(8, dpi),
             copyBounds.Top, buttonWidth, copyBounds.Height);
-        var statusRight = openBounds.Left - Scale(8, dpi);
-        var statusWidth = Scale(106, dpi);
+        var statusRight = openBounds.Left - Scale(14, dpi);
+        var statusWidth = Scale(96, dpi);
         var statusBounds = new Rectangle(statusRight - statusWidth,
-            bounds.Top + Scale(29, dpi), statusWidth, Scale(18, dpi));
+            bounds.Top + Scale(19, dpi), statusWidth, Scale(24, dpi));
+        var titleBounds = new RectangleF(bounds.Left + Scale(16, dpi),
+            bounds.Top + Scale(18, dpi),
+            Math.Max(20, statusBounds.Left - bounds.Left - Scale(28, dpi)),
+            Scale(26, dpi));
         DrawIssueTitle(graphics, issue, taskBoldFont, primaryBrush,
-            new RectangleF(bounds.Left + Scale(11, dpi), bounds.Top + Scale(27, dpi),
-                Math.Max(20, statusBounds.Left - bounds.Left - Scale(19, dpi)),
-                Scale(20, dpi)), dpi,
-            animationMilliseconds);
+            titleBounds, dpi, animationMilliseconds);
         interactions?.Issues.Add(new ScheduleIssueRegion(
-            new Rectangle(bounds.Left + Scale(11, dpi), bounds.Top + Scale(27, dpi),
-                Math.Max(20, statusBounds.Left - bounds.Left - Scale(19, dpi)),
-                Scale(20, dpi)), statusBounds, openBounds, copyBounds, issue));
+            Rectangle.Round(titleBounds), statusBounds, openBounds, copyBounds, issue));
         var metadata = $"{issue.Priority} · {ShortStatus(issue.Status)}";
         graphics.DrawString(metadata, smallFont, secondaryBrush, statusBounds, right);
     }
@@ -609,14 +705,14 @@ internal static class UsageHoverCardRenderer
             FormatFlags = StringFormatFlags.NoWrap,
             Trimming = StringTrimming.None
         };
-        var keyText = issue.Key + "  ";
+        var keyText = issue.Key;
         var keyWidth = Math.Min(bounds.Width,
             graphics.MeasureString(keyText, font, int.MaxValue, format).Width);
         graphics.DrawString(keyText, font, brush,
             new PointF(bounds.Left, bounds.Top), format);
 
-        var titleBounds = new RectangleF(bounds.Left + keyWidth, bounds.Top,
-            Math.Max(0, bounds.Width - keyWidth), bounds.Height);
+        var titleBounds = new RectangleF(bounds.Left + keyWidth + Scale(12, dpi), bounds.Top,
+            Math.Max(0, bounds.Width - keyWidth - Scale(12, dpi)), bounds.Height);
         if (titleBounds.Width < Scale(16, dpi))
         {
             return;
@@ -707,13 +803,12 @@ internal static class UsageHoverCardRenderer
         return status.Length <= 8 ? status : status[..8] + "…";
     }
 
-    private static Color PriorityColor(string priority) => priority switch
+    private static Color TaskStatusColor(IssueItem issue) => issue.Stage switch
     {
-        "S" => Red,
-        "A" => Orange,
-        "B" => Purple,
-        "C" => Blue,
-        _ => MutedText
+        WorkStage.FollowUp => Orange,
+        WorkStage.Waiting => Purple,
+        _ when issue.Kind == IssueKind.Bug => Red,
+        _ => Blue
     };
 
     private static void FillRoundedRectangle(
