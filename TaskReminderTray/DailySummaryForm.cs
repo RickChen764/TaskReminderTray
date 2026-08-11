@@ -20,13 +20,36 @@ internal sealed class DailySummaryForm : Form
 
     private readonly Label _dateLabel = new();
     private readonly TableLayoutPanel _metrics = new();
+    private readonly Panel _contentViewport = new();
     private readonly FlowLayoutPanel _content = new();
+    private readonly SummaryScrollBar _scrollBar = new();
     private DailyWorkSummary? _summary;
     private bool _shuttingDown;
+    private int _scrollOffset;
 
     internal static Size LogicalSizeForDpi(int dpi) => new(
         (int)Math.Round(680 * dpi / 96F),
         (int)Math.Round(660 * dpi / 96F));
+
+    internal static (int Maximum, int ThumbHeight, int ThumbTop) ScrollMetrics(
+        int trackHeight, int viewportHeight, int contentHeight, int offset)
+    {
+        var safeTrackHeight = Math.Max(0, trackHeight);
+        var safeViewportHeight = Math.Max(0, viewportHeight);
+        var safeContentHeight = Math.Max(0, contentHeight);
+        var maximum = Math.Max(0, safeContentHeight - safeViewportHeight);
+        var thumbHeight = safeContentHeight <= 0 || safeTrackHeight <= 0
+            ? safeTrackHeight
+            : Math.Clamp((int)Math.Round(safeTrackHeight *
+                safeViewportHeight / (double)safeContentHeight),
+                Math.Min(36, safeTrackHeight), safeTrackHeight);
+        var travel = Math.Max(0, safeTrackHeight - thumbHeight);
+        var thumbTop = maximum <= 0
+            ? 0
+            : (int)Math.Round(travel * Math.Clamp(offset, 0, maximum) /
+                              (double)maximum);
+        return (maximum, thumbHeight, thumbTop);
+    }
 
     public DailySummaryForm()
     {
@@ -159,17 +182,33 @@ internal sealed class DailySummaryForm : Form
             _metrics.Controls.Add(cell, index, 0);
         }
 
-        _content.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
-                          AnchorStyles.Left | AnchorStyles.Right;
-        _content.AutoScroll = true;
+        _contentViewport.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
+                                  AnchorStyles.Left | AnchorStyles.Right;
+        _contentViewport.BackColor = Background;
+        _contentViewport.SetBounds(24, 180, ClientSize.Width - 48,
+            ClientSize.Height - 204);
+        _contentViewport.SizeChanged += (_, _) => UpdateContentLayout();
+        _contentViewport.MouseWheel += Content_MouseWheel;
+
+        _content.AutoScroll = false;
         _content.FlowDirection = FlowDirection.TopDown;
         _content.WrapContents = false;
         _content.BackColor = Background;
-        _content.Padding = new Padding(0, 0, 8, 0);
-        _content.SetBounds(24, 180, ClientSize.Width - 48, ClientSize.Height - 204);
-        _content.SizeChanged += (_, _) => ResizeSections();
+        _content.Padding = Padding.Empty;
+        _content.Location = Point.Empty;
+        _content.MouseWheel += Content_MouseWheel;
 
-        Controls.AddRange([title, _dateLabel, separator, _metrics, _content]);
+        _scrollBar.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Right;
+        _scrollBar.SetBounds(_contentViewport.ClientSize.Width - 10, 0, 10,
+            _contentViewport.ClientSize.Height);
+        _scrollBar.ScrollRequested += offset => SetScrollOffset(offset);
+        _scrollBar.MouseWheel += Content_MouseWheel;
+
+        _contentViewport.Controls.Add(_content);
+        _contentViewport.Controls.Add(_scrollBar);
+        _scrollBar.BringToFront();
+
+        Controls.AddRange([title, _dateLabel, separator, _metrics, _contentViewport]);
     }
 
     private void SetMetric(int index, int count, string label, Color color)
@@ -210,7 +249,8 @@ internal sealed class DailySummaryForm : Form
                 Green, 3);
             AddChangesSection(_summary.RecentStatusChanges);
             AddUnscheduledHint(_summary.UnscheduledIssues.Count);
-            ResizeSections();
+            _scrollOffset = 0;
+            UpdateContentLayout();
         }
         finally
         {
@@ -415,14 +455,53 @@ internal sealed class DailySummaryForm : Form
 
     private void ResizeSections()
     {
-        var width = Math.Max(360, _content.ClientSize.Width - _content.Padding.Horizontal -
-                                   (_content.VerticalScroll.Visible
-                                       ? SystemInformation.VerticalScrollBarWidth : 0));
+        var width = Math.Max(360, _contentViewport.ClientSize.Width - 18);
         foreach (Control control in _content.Controls)
         {
             control.Width = width;
             control.PerformLayout();
         }
+    }
+
+    private void UpdateContentLayout()
+    {
+        if (_contentViewport.ClientSize.Width <= 0 ||
+            _contentViewport.ClientSize.Height <= 0)
+        {
+            return;
+        }
+
+        ResizeSections();
+        var contentWidth = Math.Max(360, _contentViewport.ClientSize.Width - 18);
+        var contentHeight = _content.Controls.Cast<Control>()
+            .Sum(control => control.Height + control.Margin.Vertical);
+        _content.Size = new Size(contentWidth,
+            Math.Max(_contentViewport.ClientSize.Height, contentHeight));
+        _scrollBar.SetBounds(_contentViewport.ClientSize.Width - 10, 0, 10,
+            _contentViewport.ClientSize.Height);
+        _scrollBar.SetMetrics(_contentViewport.ClientSize.Height, contentHeight,
+            _scrollOffset);
+        SetScrollOffset(_scrollOffset);
+        _scrollBar.BringToFront();
+    }
+
+    private void Content_MouseWheel(object? sender, MouseEventArgs e)
+    {
+        if (!_scrollBar.Visible || e.Delta == 0)
+        {
+            return;
+        }
+
+        var lines = Math.Max(1, SystemInformation.MouseWheelScrollLines);
+        SetScrollOffset(_scrollOffset - Math.Sign(e.Delta) * lines * 22);
+    }
+
+    private void SetScrollOffset(int offset)
+    {
+        var maximum = Math.Max(0, _content.Height - _contentViewport.ClientSize.Height);
+        _scrollOffset = Math.Clamp(offset, 0, maximum);
+        _content.Top = -_scrollOffset;
+        _scrollBar.SetOffset(_scrollOffset);
     }
 
     private void PositionNear(Rectangle anchorBounds)
@@ -448,6 +527,164 @@ internal sealed class DailySummaryForm : Form
         if (Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri))
         {
             Process.Start(new ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
+        }
+    }
+
+    private sealed class SummaryScrollBar : Control
+    {
+        private const int MinimumThumbHeight = 36;
+        private int _maximum;
+        private int _viewportHeight;
+        private int _contentHeight;
+        private int _offset;
+        private bool _hovered;
+        private bool _dragging;
+        private int _dragStartY;
+        private int _dragStartOffset;
+
+        public event Action<int>? ScrollRequested;
+
+        public SummaryScrollBar()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint |
+                     ControlStyles.OptimizedDoubleBuffer, true);
+            BackColor = Background;
+            Cursor = Cursors.Hand;
+            TabStop = false;
+        }
+
+        public void SetMetrics(int viewportHeight, int contentHeight, int offset)
+        {
+            _viewportHeight = Math.Max(0, viewportHeight);
+            _contentHeight = Math.Max(0, contentHeight);
+            _maximum = Math.Max(0, _contentHeight - _viewportHeight);
+            _offset = Math.Clamp(offset, 0, _maximum);
+            Visible = _maximum > 0;
+            Invalidate();
+        }
+
+        public void SetOffset(int offset)
+        {
+            var next = Math.Clamp(offset, 0, _maximum);
+            if (_offset == next)
+            {
+                return;
+            }
+            _offset = next;
+            Invalidate();
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            _hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            if (!_dragging)
+            {
+                _hovered = false;
+                Invalidate();
+            }
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                base.OnMouseDown(e);
+                return;
+            }
+
+            var thumb = ThumbBounds();
+            if (thumb.Contains(e.Location))
+            {
+                _dragging = true;
+                _dragStartY = e.Y;
+                _dragStartOffset = _offset;
+                Capture = true;
+            }
+            else
+            {
+                ScrollRequested?.Invoke(_offset +
+                    (e.Y < thumb.Top ? -_viewportHeight : _viewportHeight));
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            if (_dragging)
+            {
+                var travel = Math.Max(1, TrackBounds().Height - ThumbBounds().Height);
+                var deltaOffset = (int)Math.Round((e.Y - _dragStartY) *
+                                                  _maximum / (double)travel);
+                ScrollRequested?.Invoke(_dragStartOffset + deltaOffset);
+            }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (_dragging && e.Button == MouseButtons.Left)
+            {
+                _dragging = false;
+                Capture = false;
+                _hovered = ClientRectangle.Contains(e.Location);
+                Invalidate();
+            }
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (_maximum <= 0)
+            {
+                return;
+            }
+
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var track = TrackBounds();
+            using var trackBrush = new SolidBrush(Color.FromArgb(29, 33, 40));
+            FillRounded(e.Graphics, track, 3, trackBrush);
+            var thumb = ThumbBounds();
+            using var thumbBrush = new SolidBrush(_dragging
+                ? Color.FromArgb(116, 129, 150)
+                : _hovered
+                    ? Color.FromArgb(91, 103, 122)
+                    : Color.FromArgb(67, 76, 91));
+            FillRounded(e.Graphics, thumb, 3, thumbBrush);
+        }
+
+        private Rectangle TrackBounds() => new(2, 4, Math.Max(4, Width - 4),
+            Math.Max(1, Height - 8));
+
+        private Rectangle ThumbBounds()
+        {
+            var track = TrackBounds();
+            var metrics = ScrollMetrics(track.Height, _viewportHeight, _contentHeight,
+                _offset);
+            return new Rectangle(track.Left, track.Top + metrics.ThumbTop,
+                track.Width, metrics.ThumbHeight);
+        }
+
+        private static void FillRounded(Graphics graphics, Rectangle bounds, int radius,
+            Brush brush)
+        {
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
+            var diameter = radius * 2;
+            path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter,
+                diameter, diameter, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            graphics.FillPath(brush, path);
         }
     }
 }

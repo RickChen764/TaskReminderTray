@@ -191,6 +191,23 @@ public sealed class HoverCardTests
             DailySummaryForm.LogicalSizeForDpi(dpi));
     }
 
+    [Theory]
+    [InlineData(460, 460, 900, 0, 440, 235, 0)]
+    [InlineData(460, 460, 900, 220, 440, 235, 112)]
+    [InlineData(460, 460, 900, 440, 440, 235, 225)]
+    [InlineData(460, 460, 400, 100, 0, 460, 0)]
+    public void DailySummary_CustomScrollbarMapsOffsetToThumb(
+        int trackHeight, int viewportHeight, int contentHeight, int offset,
+        int expectedMaximum, int expectedThumbHeight, int expectedThumbTop)
+    {
+        var metrics = DailySummaryForm.ScrollMetrics(
+            trackHeight, viewportHeight, contentHeight, offset);
+
+        Assert.Equal(expectedMaximum, metrics.Maximum);
+        Assert.Equal(expectedThumbHeight, metrics.ThumbHeight);
+        Assert.Equal(expectedThumbTop, metrics.ThumbTop);
+    }
+
     [Fact]
     public void ScheduleCard_ExpandingDayIncreasesHeightAndMapsEveryIssue()
     {
