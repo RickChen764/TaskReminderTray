@@ -240,7 +240,7 @@ internal sealed class DailySummaryForm : Form
             }
             _content.Controls.Clear();
 
-            AddFocusSection(_summary.FocusIssue);
+            AddFocusSection(_summary.FocusIssue, _summary.FocusIsManual);
             AddIssueSection("今天要做", _summary.TodayIssues, "今天暂无排期任务", Blue, 4);
             var risks = _summary.OverdueIssues.Concat(_summary.DueTodayIssues)
                 .DistinctBy(issue => issue.Id, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -258,7 +258,7 @@ internal sealed class DailySummaryForm : Form
         }
     }
 
-    private void AddFocusSection(IssueItem? issue)
+    private void AddFocusSection(IssueItem? issue, bool isManual)
     {
         var section = CreateSection("当前重点", Green, issue is null ? 76 : 104);
         if (issue is null)
@@ -267,8 +267,9 @@ internal sealed class DailySummaryForm : Form
         }
         else
         {
-            AddIssueRow(section, issue, "优先级 " + issue.Priority + " · " +
-                                       ShortStatus(issue.Status), emphasize: true);
+            AddIssueRow(section, issue,
+                (isManual ? "手动设置" : "自动选择 · 今日可执行") + " · 优先级 " +
+                issue.Priority + " · " + ShortStatus(issue.Status), emphasize: true);
         }
         _content.Controls.Add(section);
     }

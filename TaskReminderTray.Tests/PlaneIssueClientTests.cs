@@ -216,6 +216,115 @@ public sealed class PlaneIssueClientTests
     }
 
     [Fact]
+    public void FocusSelector_ExcludesFutureAndUnscheduledHighPriorityWork()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var futureHighPriority = Issue("future", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795",
+            Title = "招募-程序-UI接入",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "S",
+            StartDate = today.AddDays(7),
+            DueDate = today.AddDays(8),
+            ParentId = "parent"
+        };
+        var unscheduledHighPriority = Issue("unscheduled", IssueKind.Task, today) with
+        {
+            Key = "SJ-796",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "S",
+            StartDate = null,
+            DueDate = null
+        };
+        var todayLowerPriority = Issue("today", IssueKind.Task, today) with
+        {
+            Key = "SJ-901",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "C",
+            StartDate = today,
+            DueDate = today
+        };
+
+        var focus = FocusIssueSelector.SelectAutomatic(
+            [futureHighPriority, unscheduledHighPriority, todayLowerPriority], today);
+
+        Assert.Equal("SJ-901", focus?.Key);
+        Assert.False(FocusIssueSelector.IsExecutableToday(futureHighPriority, today));
+        Assert.False(FocusIssueSelector.IsExecutableToday(unscheduledHighPriority, today));
+        Assert.True(FocusIssueSelector.IsExecutableToday(todayLowerPriority, today));
+    }
+
+    [Fact]
+    public void FocusSelector_PrefersInProgressWorkButHonorsManualSelection()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var waitingHighPriority = Issue("waiting", IssueKind.Task, today) with
+        {
+            Key = "SJ-900", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today, DueDate = today
+        };
+        var inProgress = Issue("progress", IssueKind.Task, today.AddDays(2)) with
+        {
+            Key = "SJ-901", Status = "开发中", StateGroup = "started",
+            Priority = "B", StartDate = today.AddDays(-1), DueDate = today.AddDays(2)
+        };
+        var futureManual = Issue("manual", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today.AddDays(7), DueDate = today.AddDays(8)
+        };
+
+        Assert.Equal(inProgress.Id, FocusIssueSelector.SelectAutomatic(
+            [waitingHighPriority, inProgress, futureManual], today)?.Id);
+        Assert.Equal(futureManual.Id, FocusIssueSelector.Select(
+            [waitingHighPriority, inProgress, futureManual], today, futureManual.Id)?.Id);
+    }
+
+    [Fact]
+    public void FocusSelector_ReturnsNoAutomaticFocusWhenNothingIsExecutable()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var future = Issue("future", IssueKind.Task, today.AddDays(2)) with
+        {
+            StartDate = today.AddDays(1), DueDate = today.AddDays(2), Priority = "S"
+        };
+        var unscheduled = Issue("unscheduled", IssueKind.Task, today) with
+        {
+            StartDate = null, DueDate = null, Priority = "S"
+        };
+
+        Assert.Null(FocusIssueSelector.SelectAutomatic([future, unscheduled], today));
+    }
+
+    [Fact]
+    public void ScheduleAndDailySummary_UseTheSameAutomaticFocus()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var futureHighPriority = Issue("future", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today.AddDays(7), DueDate = today.AddDays(8)
+        };
+        var current = Issue("current", IssueKind.Task, today) with
+        {
+            Key = "SJ-901", Status = "待开发", StateGroup = "unstarted",
+            Priority = "C", StartDate = today, DueDate = today
+        };
+        var issues = new[] { futureHighPriority, current };
+
+        var schedule = ScheduleSummary.Create(issues, today, 2);
+        var daily = DailyWorkSummary.Create(issues, [], today, null);
+
+        Assert.Equal("SJ-901", schedule.CurrentFocus?.Key);
+        Assert.Equal(schedule.CurrentFocus?.Id, daily.FocusIssue?.Id);
+        Assert.False(daily.FocusIsManual);
+    }
+
+    [Fact]
     public void ScheduleSummary_GroupsMultiDayIssuesIntoEachWeekday()
     {
         var monday = new DateOnly(2026, 8, 3);

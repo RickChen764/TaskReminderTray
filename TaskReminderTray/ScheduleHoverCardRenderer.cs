@@ -499,7 +499,10 @@ internal static class UsageHoverCardRenderer
         using var stateBrush = new SolidBrush(Green);
         using var stateFormat = new StringFormat { Alignment = StringAlignment.Far,
             LineAlignment = StringAlignment.Center };
-        graphics.DrawString("今日重点", smallFont, stateBrush, stateBounds, stateFormat);
+        graphics.DrawString(string.IsNullOrWhiteSpace(content.FocusIssueId)
+                ? "自动重点"
+                : "手动重点",
+            smallFont, stateBrush, stateBounds, stateFormat);
         if (interactions is not null)
         {
             var region = new ScheduleIssueRegion(Rectangle.Round(titleBounds), stateBounds,

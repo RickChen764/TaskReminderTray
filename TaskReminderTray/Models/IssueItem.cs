@@ -154,7 +154,7 @@ internal sealed class ScheduleSummary
     public required IReadOnlyList<IssueItem> FollowUpIssues { get; init; }
     public required IReadOnlyList<IssueItem> WaitingIssues { get; init; }
 
-    public IssueItem? CurrentFocus => DevelopmentIssues.FirstOrDefault();
+    public IssueItem? CurrentFocus { get; init; }
 
     public IReadOnlyList<IssueItem> GetIssuesForDate(
         DateOnly date,
@@ -215,6 +215,7 @@ internal sealed class ScheduleSummary
             DevelopmentIssues = development,
             FollowUpIssues = followUp,
             WaitingIssues = waiting,
+            CurrentFocus = FocusIssueSelector.SelectAutomatic(development, today),
             TaskCount = active.Count(issue => issue.Kind == IssueKind.Task),
             BugCount = active.Count(issue => issue.Kind == IssueKind.Bug),
             OverdueCount = active.Count(issue => issue.DueDate is { } due && due < today),
@@ -256,4 +257,58 @@ internal sealed class ScheduleSummary
         return start is not null && end is not null &&
                start.Value <= date && end.Value >= date;
     }
+}
+
+internal static class FocusIssueSelector
+{
+    public static IssueItem? Select(
+        IEnumerable<IssueItem> issues,
+        DateOnly today,
+        string? manualFocusIssueId)
+    {
+        var active = issues.Where(issue => !issue.IsCompleted).ToArray();
+        var manual = active.FirstOrDefault(issue =>
+            !string.IsNullOrWhiteSpace(manualFocusIssueId) &&
+            string.Equals(issue.Id, manualFocusIssueId,
+                StringComparison.OrdinalIgnoreCase));
+        return manual ?? SelectAutomatic(active, today);
+    }
+
+    public static IssueItem? SelectAutomatic(
+        IEnumerable<IssueItem> issues,
+        DateOnly today) => issues
+        .Where(issue => !issue.IsCompleted &&
+                        issue.Stage == WorkStage.Development &&
+                        IsExecutableToday(issue, today))
+        .OrderBy(issue => IsInProgress(issue) ? 0 : 1)
+        .ThenBy(issue => DeadlineRank(issue, today))
+        .ThenBy(issue => issue.PriorityRank)
+        .ThenBy(issue => issue.DueDate ?? DateOnly.MaxValue)
+        .ThenBy(issue => issue.Key, StringComparer.OrdinalIgnoreCase)
+        .FirstOrDefault();
+
+    internal static bool IsExecutableToday(IssueItem issue, DateOnly today)
+    {
+        // 明确设置了未来开始日期，说明前置条件或排期尚未满足。
+        if (issue.StartDate is { } start)
+        {
+            return start <= today;
+        }
+
+        // 完全未排期的任务不能自动冒充“当前”重点。只有已经到期或逾期、
+        // 但缺失开始日期的工单才进入兜底候选。
+        return issue.DueDate is { } due && due <= today;
+    }
+
+    private static bool IsInProgress(IssueItem issue) =>
+        issue.Status.Contains("开发中", StringComparison.OrdinalIgnoreCase) ||
+        issue.Status.Contains("进行中", StringComparison.OrdinalIgnoreCase) ||
+        issue.Status.Contains("处理中", StringComparison.OrdinalIgnoreCase);
+
+    private static int DeadlineRank(IssueItem issue, DateOnly today) => issue.DueDate switch
+    {
+        { } due when due < today => 0,
+        { } due when due == today => 1,
+        _ => 2
+    };
 }
