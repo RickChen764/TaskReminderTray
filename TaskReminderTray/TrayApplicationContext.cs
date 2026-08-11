@@ -16,8 +16,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly PersonalWorkStore _personalWorkStore = new();
     private readonly ReminderEvaluator _reminderEvaluator = new();
     private readonly PersistentNotificationForm _notificationForm = new();
-    private readonly NotificationCenterForm _notificationCenterForm = new();
-    private readonly DailySummaryForm _dailySummaryForm = new();
     private readonly ScheduleDetailsForm _detailsForm = new();
     private readonly SnoozedReminderForm _snoozedReminderForm = new();
     private readonly NotifyIcon _notifyIcon;
@@ -119,14 +117,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
         _notificationForm.AcknowledgeRequested += (_, notificationId) =>
             AcknowledgeNotification(notificationId);
-        _notificationCenterForm.AcknowledgeRequested += (_, notificationId) =>
+        _detailsForm.NotificationAcknowledgeRequested += (_, notificationId) =>
             AcknowledgeNotification(notificationId);
-        _notificationCenterForm.AcknowledgeAllRequested += (_, _) =>
+        _detailsForm.NotificationAcknowledgeAllRequested += (_, _) =>
             AcknowledgeAllNotifications();
         _detailsForm.FocusChanged += SetFocusIssue;
         _detailsForm.SnoozeRequested += AddSnoozedReminder;
-        _detailsForm.NotificationCenterRequested += ShowNotificationCenter;
-        _detailsForm.DailySummaryRequested += () => ShowDailySummary(manual: true);
         _snoozedReminderForm.AcknowledgeRequested += AcknowledgeSnoozedReminder;
         _snoozedReminderForm.RescheduleRequested += RescheduleSnoozedReminder;
         _personalReminderTimer.Tick += (_, _) =>
@@ -415,10 +411,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowNotificationCenter()
     {
-        _detailsForm.Hide();
-        _dailySummaryForm.Hide();
-        _notificationCenterForm.ShowCenter(_notificationStore.LoadHistory(),
-            _toolbar.GetScreenBounds());
+        _detailsForm.ShowTab(DetailsTab.Notifications, _toolbar.GetScreenBounds());
     }
 
     private void UpdateDailySummary(IReadOnlyList<IssueItem> issues, DateOnly today)
@@ -426,7 +419,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dailySummary = DailyWorkSummary.Create(issues,
             _notificationStore.LoadHistory(), today, _personalWorkState.FocusIssueId);
         _dailySummaryItem.Enabled = true;
-        _dailySummaryForm.SetSummary(_dailySummary);
+        _detailsForm.SetDailySummary(_dailySummary);
     }
 
     private void ShowDailySummary(bool manual)
@@ -443,9 +436,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _personalWorkState = _personalWorkStore.MarkDailySummaryShown(_dailySummary.Date);
         }
-        _detailsForm.Hide();
-        _notificationCenterForm.Hide();
-        _dailySummaryForm.ShowSummary(_dailySummary, _toolbar.GetScreenBounds());
+        _detailsForm.ShowTab(DetailsTab.DailySummary, _toolbar.GetScreenBounds());
     }
 
     private void UpdateNotificationSurfaces(bool refreshSchedule = true)
@@ -453,7 +444,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notificationCenterItem.Text = _pendingNotifications.Count > 0
             ? $"通知中心（未读 {_pendingNotifications.Count}）"
             : "通知中心";
-        _notificationCenterForm.SetNotifications(_notificationStore.LoadHistory());
+        _detailsForm.SetNotifications(_notificationStore.LoadHistory());
         if (refreshSchedule && _detailsContent is not null)
         {
             _detailsContent.UnreadNotificationCount = _pendingNotifications.Count;
@@ -805,10 +796,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dismissController.Dispose();
         _notificationForm.Shutdown();
         _notificationForm.Dispose();
-        _notificationCenterForm.Shutdown();
-        _notificationCenterForm.Dispose();
-        _dailySummaryForm.Shutdown();
-        _dailySummaryForm.Dispose();
         _detailsForm.Shutdown();
         _detailsForm.Dispose();
         _snoozedReminderForm.Shutdown();

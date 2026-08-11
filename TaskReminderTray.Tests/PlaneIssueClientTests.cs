@@ -678,7 +678,7 @@ public sealed class PlaneIssueClientTests
             Assert.Equal(NotificationKind.DueToday, notification.Kind);
             Assert.Equal("SJ-901", notification.IssueKey);
             Assert.Equal("今天到期  ·  开发中",
-                NotificationCenterForm.NotificationDescription(notification));
+                NotificationCenterPage.NotificationDescription(notification));
 
             store.Acknowledge(notification.Id);
             Assert.Empty(store.AddDueToday([dueToday], today, detectedAt.AddHours(2)));

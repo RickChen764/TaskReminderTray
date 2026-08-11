@@ -4,7 +4,7 @@ using TaskReminderTray.Services;
 
 namespace TaskReminderTray;
 
-internal sealed class DailySummaryForm : Form
+internal sealed class DailySummaryPage : UserControl
 {
     private static readonly Color Background = Color.FromArgb(24, 27, 33);
     private static readonly Color Surface = Color.FromArgb(31, 35, 43);
@@ -24,12 +24,7 @@ internal sealed class DailySummaryForm : Form
     private readonly FlowLayoutPanel _content = new();
     private readonly SummaryScrollBar _scrollBar = new();
     private DailyWorkSummary? _summary;
-    private bool _shuttingDown;
     private int _scrollOffset;
-
-    internal static Size LogicalSizeForDpi(int dpi) => new(
-        (int)Math.Round(680 * dpi / 96F),
-        (int)Math.Round(660 * dpi / 96F));
 
     internal static (int Maximum, int ThumbHeight, int ThumbTop) ScrollMetrics(
         int trackHeight, int viewportHeight, int contentHeight, int offset)
@@ -51,38 +46,13 @@ internal sealed class DailySummaryForm : Form
         return (maximum, thumbHeight, thumbTop);
     }
 
-    public DailySummaryForm()
+    public DailySummaryPage()
     {
-        Text = "今日工作摘要";
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        TopMost = true;
-        StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(680, 660);
-        MinimumSize = new Size(600, 500);
+        Dock = DockStyle.Fill;
         BackColor = Background;
         Font = new Font("Microsoft YaHei UI", 9F);
         BuildInterface();
-        Deactivate += (_, _) => Hide();
-        Paint += (_, e) =>
-        {
-            using var pen = new Pen(Border);
-            e.Graphics.DrawRectangle(pen, 0, 0,
-                ClientSize.Width - 1, ClientSize.Height - 1);
-        };
-    }
-
-    public void ShowSummary(DailyWorkSummary summary, Rectangle anchorBounds)
-    {
-        SetSummary(summary);
-        PositionNear(anchorBounds);
-        if (!Visible)
-        {
-            Show();
-        }
-        Activate();
-        BringToFront();
     }
 
     internal void SetSummary(DailyWorkSummary summary)
@@ -102,51 +72,18 @@ internal sealed class DailySummaryForm : Form
         RebuildContent();
     }
 
-    public void Shutdown()
-    {
-        _shuttingDown = true;
-        Close();
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (!_shuttingDown && e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            Hide();
-        }
-        base.OnFormClosing(e);
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.Escape)
-        {
-            Hide();
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
     private void BuildInterface()
     {
-        var title = new Label
-        {
-            Text = "今日工作摘要",
-            ForeColor = PrimaryText,
-            Font = new Font(Font.FontFamily, 16F, FontStyle.Bold),
-            AutoSize = true,
-            Location = new Point(24, 17)
-        };
         _dateLabel.ForeColor = MutedText;
+        _dateLabel.Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold);
         _dateLabel.AutoSize = true;
-        _dateLabel.Location = new Point(26, 54);
+        _dateLabel.Location = new Point(24, 14);
 
         var separator = new Panel
         {
             BackColor = Border,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            Location = new Point(24, 82),
+            Location = new Point(24, 42),
             Size = new Size(ClientSize.Width - 48, 1)
         };
 
@@ -155,7 +92,7 @@ internal sealed class DailySummaryForm : Form
         _metrics.ColumnCount = 4;
         _metrics.RowCount = 1;
         _metrics.CellBorderStyle = TableLayoutPanelCellBorderStyle.Single;
-        _metrics.SetBounds(24, 98, ClientSize.Width - 48, 66);
+        _metrics.SetBounds(24, 57, ClientSize.Width - 48, 66);
         for (var index = 0; index < 4; index++)
         {
             _metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
@@ -185,8 +122,8 @@ internal sealed class DailySummaryForm : Form
         _contentViewport.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
                                   AnchorStyles.Left | AnchorStyles.Right;
         _contentViewport.BackColor = Background;
-        _contentViewport.SetBounds(24, 180, ClientSize.Width - 48,
-            ClientSize.Height - 204);
+        _contentViewport.SetBounds(24, 139, ClientSize.Width - 48,
+            ClientSize.Height - 157);
         _contentViewport.SizeChanged += (_, _) => UpdateContentLayout();
         _contentViewport.MouseWheel += Content_MouseWheel;
 
@@ -208,7 +145,7 @@ internal sealed class DailySummaryForm : Form
         _contentViewport.Controls.Add(_scrollBar);
         _scrollBar.BringToFront();
 
-        Controls.AddRange([title, _dateLabel, separator, _metrics, _contentViewport]);
+        Controls.AddRange([_dateLabel, separator, _metrics, _contentViewport]);
     }
 
     private void SetMetric(int index, int count, string label, Color color)
@@ -240,11 +177,10 @@ internal sealed class DailySummaryForm : Form
             }
             _content.Controls.Clear();
 
-            AddFocusSection(_summary.FocusIssue, _summary.FocusIsManual);
-            AddIssueSection("今天要做", _summary.TodayIssues, "今天暂无排期任务", Blue, 4);
+            AddIssueSection("今日任务", _summary.TodayIssues, "今天暂无排期任务", Blue, 4);
             var risks = _summary.OverdueIssues.Concat(_summary.DueTodayIssues)
                 .DistinctBy(issue => issue.Id, StringComparer.OrdinalIgnoreCase).ToArray();
-            AddIssueSection("需要留意", risks, "今天没有到期或逾期工单", Orange, 3);
+            AddIssueSection("风险提醒", risks, "今天没有到期或逾期工单", Orange, 3);
             AddIssueSection("明天预览", _summary.TomorrowIssues, "明天暂无排期任务",
                 Green, 3);
             AddChangesSection(_summary.RecentStatusChanges);
@@ -256,22 +192,6 @@ internal sealed class DailySummaryForm : Form
         {
             _content.ResumeLayout();
         }
-    }
-
-    private void AddFocusSection(IssueItem? issue, bool isManual)
-    {
-        var section = CreateSection("当前重点", Green, issue is null ? 76 : 104);
-        if (issue is null)
-        {
-            AddEmpty(section, "暂无当前重点");
-        }
-        else
-        {
-            AddIssueRow(section, issue,
-                (isManual ? "手动设置" : "自动选择 · 今日可执行") + " · 优先级 " +
-                issue.Priority + " · " + ShortStatus(issue.Status), emphasize: true);
-        }
-        _content.Controls.Add(section);
     }
 
     private void AddIssueSection(string title, IReadOnlyList<IssueItem> issues,
@@ -304,7 +224,7 @@ internal sealed class DailySummaryForm : Form
     private void AddChangesSection(IReadOnlyList<PersistentNotification> changes)
     {
         var shown = changes.Take(3).ToArray();
-        var section = CreateSection("昨天以来的变化", Blue,
+        var section = CreateSection("最近状态变化", Blue,
             shown.Length == 0 ? 76 : 48 + shown.Length * 48);
         if (shown.Length == 0)
         {
@@ -343,7 +263,7 @@ internal sealed class DailySummaryForm : Form
         }
         var hint = new Label
         {
-            Text = $"还有 {count} 项开发任务尚未安排日期",
+            Text = $"未排期提示 · 还有 {count} 项开发任务尚未安排日期",
             ForeColor = MutedText,
             BackColor = Surface,
             Height = 36,
@@ -503,21 +423,6 @@ internal sealed class DailySummaryForm : Form
         _scrollOffset = Math.Clamp(offset, 0, maximum);
         _content.Top = -_scrollOffset;
         _scrollBar.SetOffset(_scrollOffset);
-    }
-
-    private void PositionNear(Rectangle anchorBounds)
-    {
-        var area = Screen.FromRectangle(anchorBounds).WorkingArea;
-        var margin = Math.Max(10, (int)Math.Round(10 * DeviceDpi / 96F));
-        var x = anchorBounds.Right - Width;
-        var y = anchorBounds.Top >= area.Bottom
-            ? area.Bottom - Height - margin
-            : area.Top + margin;
-        Location = new Point(
-            Math.Clamp(x, area.Left + margin, Math.Max(area.Left + margin,
-                area.Right - Width - margin)),
-            Math.Clamp(y, area.Top + margin, Math.Max(area.Top + margin,
-                area.Bottom - Height - margin)));
     }
 
     private static string ShortStatus(string status) =>

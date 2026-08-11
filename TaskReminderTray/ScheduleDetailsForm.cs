@@ -7,6 +7,13 @@ using UsageTray;
 
 namespace TaskReminderTray;
 
+internal enum DetailsTab
+{
+    Schedule,
+    DailySummary,
+    Notifications
+}
+
 /// <summary>
 /// 可交互的排期详情窗口。后续按钮、链接等控件可以直接加入此窗体，
 /// 不再受原生 ToolTip 无法接收稳定交互的限制。
@@ -15,14 +22,21 @@ internal sealed class ScheduleDetailsForm : Form
 {
     private const int DwmWindowCornerPreference = 33;
     private const int DwmWindowCornerRound = 2;
+    private const int TabHeaderHeight = 58;
     private readonly DetailsSurface _surface = new();
+    private readonly DailySummaryPage _dailySummaryPage = new();
+    private readonly NotificationCenterPage _notificationCenterPage = new();
+    private readonly Panel _pageHost = new();
+    private readonly TableLayoutPanel _tabStrip = new();
+    private readonly Dictionary<DetailsTab, DetailsTabButton> _tabButtons = [];
     private bool _allowDeactivateClose = true;
     private Rectangle _anchorBounds;
+    private DetailsTab _selectedTab;
 
     public event Action<IssueItem?>? FocusChanged;
     public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
-    public event Action? NotificationCenterRequested;
-    public event Action? DailySummaryRequested;
+    public event EventHandler<string>? NotificationAcknowledgeRequested;
+    public event EventHandler? NotificationAcknowledgeAllRequested;
 
     public ScheduleDetailsForm()
     {
@@ -34,14 +48,15 @@ internal sealed class ScheduleDetailsForm : Form
         TopMost = true;
         KeyPreview = true;
         BackColor = Color.FromArgb(24, 27, 33);
-        Controls.Add(_surface);
-        _surface.Dock = DockStyle.Fill;
+        BuildTabInterface();
         _surface.LayoutChanged += ResizeForContent;
         _surface.FocusChanged += issue => FocusChanged?.Invoke(issue);
         _surface.SnoozeRequested += (issue, remindAt) =>
             SnoozeRequested?.Invoke(issue, remindAt);
-        _surface.NotificationCenterRequested += () => NotificationCenterRequested?.Invoke();
-        _surface.DailySummaryRequested += () => DailySummaryRequested?.Invoke();
+        _notificationCenterPage.AcknowledgeRequested += (_, id) =>
+            NotificationAcknowledgeRequested?.Invoke(this, id);
+        _notificationCenterPage.AcknowledgeAllRequested += (_, _) =>
+            NotificationAcknowledgeAllRequested?.Invoke(this, EventArgs.Empty);
         _surface.MenuOpening += () => _allowDeactivateClose = false;
         _surface.MenuClosed += () =>
         {
@@ -67,12 +82,88 @@ internal sealed class ScheduleDetailsForm : Form
                 Hide();
             }
         };
+        SelectTab(DetailsTab.Schedule);
+    }
+
+    internal DetailsTab SelectedTab => _selectedTab;
+
+    internal static Size LogicalSizeForDpi(int dpi) => new(
+        (int)Math.Round(760 * dpi / 96F),
+        (int)Math.Round(700 * dpi / 96F));
+
+    private void BuildTabInterface()
+    {
+        var header = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = TabHeaderHeight,
+            BackColor = Color.FromArgb(20, 23, 29),
+            Padding = new Padding(16, 10, 16, 9)
+        };
+        header.Paint += (_, e) =>
+        {
+            using var line = new Pen(Color.FromArgb(48, 54, 65));
+            e.Graphics.DrawLine(line, 0, header.ClientSize.Height - 1,
+                header.ClientSize.Width, header.ClientSize.Height - 1);
+        };
+
+        _tabStrip.Dock = DockStyle.Left;
+        _tabStrip.Width = 438;
+        _tabStrip.ColumnCount = 3;
+        _tabStrip.RowCount = 1;
+        _tabStrip.Margin = Padding.Empty;
+        _tabStrip.Padding = Padding.Empty;
+        _tabStrip.BackColor = Color.Transparent;
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
+
+        AddTabButton(DetailsTab.Schedule, "开发安排", 0);
+        AddTabButton(DetailsTab.DailySummary, "今日摘要", 1);
+        AddTabButton(DetailsTab.Notifications, "通知", 2);
+        header.Controls.Add(_tabStrip);
+
+        _pageHost.Dock = DockStyle.Fill;
+        _pageHost.BackColor = Color.FromArgb(24, 27, 33);
+        _surface.Dock = DockStyle.Fill;
+        _dailySummaryPage.Dock = DockStyle.Fill;
+        _notificationCenterPage.Dock = DockStyle.Fill;
+        _pageHost.Controls.AddRange([_surface, _dailySummaryPage,
+            _notificationCenterPage]);
+        Controls.Add(_pageHost);
+        Controls.Add(header);
+    }
+
+    private void AddTabButton(DetailsTab tab, string text, int column)
+    {
+        var button = new DetailsTabButton
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(column == 0 ? 0 : 4, 0, column == 2 ? 0 : 4, 0),
+            TabStop = true
+        };
+        button.Click += (_, _) => SelectTab(tab);
+        _tabButtons[tab] = button;
+        _tabStrip.Controls.Add(button, column, 0);
     }
 
     public void SetContent(HoverCardContent content)
     {
         _surface.Content = content;
+        _tabButtons[DetailsTab.Notifications].BadgeCount =
+            content.UnreadNotificationCount;
         ResizeForContent();
+    }
+
+    public void SetDailySummary(DailyWorkSummary summary) =>
+        _dailySummaryPage.SetSummary(summary);
+
+    public void SetNotifications(IReadOnlyList<PersistentNotification> notifications)
+    {
+        _notificationCenterPage.SetNotifications(notifications);
+        var unread = notifications.Count(notification => !notification.IsRead);
+        _tabButtons[DetailsTab.Notifications].BadgeCount = unread;
     }
 
     private void ResizeForContent()
@@ -83,10 +174,17 @@ internal sealed class ScheduleDetailsForm : Form
         }
 
         var size = UsageHoverCardRenderer.Measure(_surface.Content, DeviceDpi);
-        ClientSize = size;
+        var target = new Size(size.Width, size.Height);
+        var sizeChanged = ClientSize != target;
+        if (sizeChanged)
+        {
+            // Tab 占用原详情卡底部的留白，不增加窗口总高度。只有排期展开/折叠
+            // 真正改变内容高度时才设置尺寸，后台刷新不会再触发窗口重排闪动。
+            ClientSize = target;
+        }
         PerformLayout();
         _surface.RefreshInteractionLayout();
-        if (Visible && !_anchorBounds.IsEmpty)
+        if (Visible && !_anchorBounds.IsEmpty && sizeChanged)
         {
             PositionNear(_anchorBounds);
         }
@@ -102,11 +200,47 @@ internal sealed class ScheduleDetailsForm : Form
             return;
         }
 
+        SelectTab(DetailsTab.Schedule);
         PositionNear(anchorBounds);
         _allowDeactivateClose = false;
         Show();
         Activate();
         BeginInvoke(() => _allowDeactivateClose = true);
+    }
+
+    public void ShowTab(DetailsTab tab, Rectangle anchorBounds)
+    {
+        _anchorBounds = anchorBounds;
+        SelectTab(tab);
+        PositionNear(anchorBounds);
+        _allowDeactivateClose = false;
+        if (!Visible)
+        {
+            Show();
+        }
+        Activate();
+        BringToFront();
+        BeginInvoke(() => _allowDeactivateClose = true);
+    }
+
+    private void SelectTab(DetailsTab tab)
+    {
+        _selectedTab = tab;
+        _surface.Visible = tab == DetailsTab.Schedule;
+        _dailySummaryPage.Visible = tab == DetailsTab.DailySummary;
+        _notificationCenterPage.Visible = tab == DetailsTab.Notifications;
+        foreach (var (item, button) in _tabButtons)
+        {
+            button.Selected = item == tab;
+        }
+        Control selectedPage = tab switch
+        {
+            DetailsTab.Schedule => _surface,
+            DetailsTab.DailySummary => _dailySummaryPage,
+            DetailsTab.Notifications => _notificationCenterPage,
+            _ => _surface
+        };
+        selectedPage.BringToFront();
     }
 
     public void Shutdown()
@@ -177,6 +311,108 @@ internal sealed class ScheduleDetailsForm : Form
     private static extern int DwmSetWindowAttribute(
         IntPtr window, int attribute, ref int value, int valueSize);
 
+    private sealed class DetailsTabButton : Button
+    {
+        private bool _selected;
+        private int _badgeCount;
+
+        public bool Selected
+        {
+            get => _selected;
+            set
+            {
+                if (_selected == value) return;
+                _selected = value;
+                Invalidate();
+            }
+        }
+
+        public int BadgeCount
+        {
+            get => _badgeCount;
+            set
+            {
+                if (_badgeCount == value) return;
+                _badgeCount = value;
+                Invalidate();
+            }
+        }
+
+        public DetailsTabButton()
+        {
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            BackColor = Color.Transparent;
+            ForeColor = Color.FromArgb(174, 185, 201);
+            Cursor = Cursors.Hand;
+            UseVisualStyleBackColor = false;
+            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
+            var fill = Selected
+                ? Color.FromArgb(39, 48, 62)
+                : ClientRectangle.Contains(PointToClient(Cursor.Position))
+                    ? Color.FromArgb(31, 36, 44)
+                    : Color.FromArgb(24, 28, 35);
+            using var path = RoundedPath(bounds, 7);
+            using var brush = new SolidBrush(fill);
+            e.Graphics.FillPath(brush, path);
+            using var pen = new Pen(Selected
+                ? Color.FromArgb(72, 91, 121)
+                : Color.FromArgb(49, 56, 68));
+            e.Graphics.DrawPath(pen, path);
+
+            var label = BadgeCount > 0 ? $"{Text}  {Math.Min(99, BadgeCount)}" : Text;
+            TextRenderer.DrawText(e.Graphics, label, Font, bounds,
+                Selected ? Color.FromArgb(244, 246, 250) : ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            if (Selected)
+            {
+                using var accent = new SolidBrush(Color.FromArgb(88, 142, 238));
+                e.Graphics.FillRectangle(accent, 14, Height - 3,
+                    Math.Max(1, Width - 28), 2);
+            }
+            if (BadgeCount > 0)
+            {
+                using var dot = new SolidBrush(Color.FromArgb(244, 171, 68));
+                e.Graphics.FillEllipse(dot, Width - 14, 7, 6, 6);
+            }
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        private static GraphicsPath RoundedPath(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            var diameter = radius * 2;
+            path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter,
+                diameter, diameter, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
     private sealed class DetailsSurface : Control
     {
         private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 50 };
@@ -196,8 +432,6 @@ internal sealed class ScheduleDetailsForm : Form
         public event Action? LayoutChanged;
         public event Action<IssueItem?>? FocusChanged;
         public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
-        public event Action? NotificationCenterRequested;
-        public event Action? DailySummaryRequested;
         public event Action? MenuOpening;
         public event Action? MenuClosed;
 
@@ -218,8 +452,6 @@ internal sealed class ScheduleDetailsForm : Form
             MouseLeave += (_, _) =>
             {
                 SetHoveredWeekNavigation(null);
-                SetNotificationCenterHovered(false);
-                SetDailySummaryHovered(false);
             };
             MouseUp += DetailsSurface_MouseUp;
         }
@@ -260,37 +492,10 @@ internal sealed class ScheduleDetailsForm : Form
             var weekNavigation = _interactions.WeekNavigation.LastOrDefault(item =>
                 item.Bounds.Contains(e.Location));
             SetHoveredWeekNavigation(weekNavigation?.Navigation);
-            SetNotificationCenterHovered(
-                _interactions.NotificationCenterBounds.Contains(e.Location));
-            SetDailySummaryHovered(_interactions.DailySummaryBounds.Contains(e.Location));
             Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location)) ||
-                     weekNavigation is not null ||
-                     _interactions.NotificationCenterBounds.Contains(e.Location) ||
-                     _interactions.DailySummaryBounds.Contains(e.Location)
+                     weekNavigation is not null
                 ? Cursors.Hand
                 : Cursors.Default;
-        }
-
-        private void SetDailySummaryHovered(bool hovered)
-        {
-            if (_content is null || _content.DailySummaryHovered == hovered)
-            {
-                return;
-            }
-
-            _content.DailySummaryHovered = hovered;
-            Invalidate(_interactions.DailySummaryBounds);
-        }
-
-        private void SetNotificationCenterHovered(bool hovered)
-        {
-            if (_content is null || _content.NotificationCenterHovered == hovered)
-            {
-                return;
-            }
-
-            _content.NotificationCenterHovered = hovered;
-            Invalidate(_interactions.NotificationCenterBounds);
         }
 
         private void SetHoveredWeekNavigation(ScheduleWeekNavigation? navigation)
@@ -317,18 +522,6 @@ internal sealed class ScheduleDetailsForm : Form
 
             if (e.Button != MouseButtons.Left)
             {
-                return;
-            }
-
-            if (_interactions.NotificationCenterBounds.Contains(e.Location))
-            {
-                NotificationCenterRequested?.Invoke();
-                return;
-            }
-
-            if (_interactions.DailySummaryBounds.Contains(e.Location))
-            {
-                DailySummaryRequested?.Invoke();
                 return;
             }
 
