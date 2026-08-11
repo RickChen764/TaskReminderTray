@@ -130,6 +130,175 @@ public sealed class PlaneIssueClientTests
     }
 
     [Fact]
+    public void BuildIssueRelationsEndpoint_UsesEnterprisePlaneRoute()
+    {
+        var source = PlaneIssueClient.ParseSourceUrl(
+            "https://plane.example.com/jx/workspace-views/my-all-issues");
+
+        var uri = PlaneIssueClient.BuildIssueRelationsEndpoint(source,
+            "project-1", "issue-1");
+
+        Assert.Equal(
+            "/api/workspaces/jx/projects/project-1/issues/issue-1/issue-relation/",
+            uri.AbsolutePath);
+    }
+
+    [Fact]
+    public void ParsePredecessors_ResolvesBlockedByIssueAndCompletion()
+    {
+        const string json = """
+        {
+          "blocking": [],
+          "blocked_by": [
+            {
+              "id": "predecessor-1",
+              "project_id": "project-1",
+              "sequence_id": 793,
+              "name": "招募-拼接-UI拼接制作",
+              "state_id": "state-open",
+              "relation_type": "blocked_by"
+            },
+            {
+              "id": "predecessor-2",
+              "project_id": "project-1",
+              "sequence_id": 700,
+              "name": "已完成前置",
+              "state_id": "state-done",
+              "relation_type": "blocked_by"
+            }
+          ]
+        }
+        """;
+        var states = new Dictionary<string, StateInfo>
+        {
+            ["state-open"] = new("待开发", "unstarted"),
+            ["state-done"] = new("已完成", "completed")
+        };
+        var projects = new Dictionary<string, string> { ["project-1"] = "SJ" };
+
+        var predecessors = PlaneIssueClient.ParsePredecessors(json, states, projects);
+
+        Assert.Equal(2, predecessors.Count);
+        Assert.Equal("SJ-793", predecessors[0].Key);
+        Assert.False(predecessors[0].IsCompleted);
+        Assert.Equal("待开发", predecessors[0].Status);
+        Assert.Equal("SJ-700", predecessors[1].Key);
+        Assert.True(predecessors[1].IsCompleted);
+    }
+
+    [Fact]
+    public async Task GetIssues_LoadsRelationsOnlyUntilFirstUnblockedFocusCandidate()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var handler = new AuthenticationHandler
+        {
+            IssuesJson = $$"""
+            {
+              "results": [
+                {
+                  "id": "issue-795",
+                  "sequence_id": 795,
+                  "project_identifier": "SJ",
+                  "project_id": "project-1",
+                  "name": "招募-程序-UI接入",
+                  "state_name": "待开发",
+                  "state_group": "unstarted",
+                  "priority": "1",
+                  "start_date": "{{today:yyyy-MM-dd}}",
+                  "target_date": "{{today:yyyy-MM-dd}}"
+                },
+                {
+                  "id": "issue-901",
+                  "sequence_id": 901,
+                  "project_identifier": "SJ",
+                  "project_id": "project-1",
+                  "name": "触发功能接入",
+                  "state_name": "待开发",
+                  "state_group": "unstarted",
+                  "priority": "4",
+                  "start_date": "{{today:yyyy-MM-dd}}",
+                  "target_date": "{{today:yyyy-MM-dd}}"
+                },
+                {
+                  "id": "issue-902",
+                  "sequence_id": 902,
+                  "project_identifier": "SJ",
+                  "project_id": "project-1",
+                  "name": "第三候选",
+                  "state_name": "待开发",
+                  "state_group": "unstarted",
+                  "priority": "4",
+                  "start_date": "{{today:yyyy-MM-dd}}",
+                  "target_date": "{{today.AddDays(2):yyyy-MM-dd}}"
+                }
+              ]
+            }
+            """,
+            RelationJsonByIssue =
+            {
+                ["issue-795"] = """
+                    { "blocked_by": [{
+                      "id": "issue-793", "sequence_id": 793,
+                      "project_identifier": "SJ", "name": "前置任务",
+                      "state_name": "待开发", "state_group": "unstarted"
+                    }] }
+                    """,
+                ["issue-901"] = """{ "blocked_by": [] }"""
+            }
+        };
+        using var client = new PlaneIssueClient(handler);
+
+        var issues = await client.GetIssuesAsync(PasswordSettings());
+        var summary = ScheduleSummary.Create(issues, today, 2);
+
+        Assert.Equal(2, handler.RelationRequestCount);
+        Assert.True(issues.Single(issue => issue.Key == "SJ-795")
+            .HasIncompletePredecessor);
+        Assert.Equal("SJ-793", issues.Single(issue => issue.Key == "SJ-795")
+            .BlockedBy[0].Key);
+        Assert.Equal("SJ-901", summary.CurrentFocus?.Key);
+        Assert.DoesNotContain("issue-902", handler.RelationRequestedIssueIds);
+    }
+
+    [Fact]
+    public async Task GetIssues_CompletedPredecessorDoesNotBlockFocus()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var handler = new AuthenticationHandler
+        {
+            IssuesJson = $$"""
+            { "results": [{
+              "id": "issue-795", "sequence_id": 795,
+              "project_identifier": "SJ", "project_id": "project-1",
+              "name": "招募-程序-UI接入", "state_name": "待开发",
+              "state_group": "unstarted", "priority": "1",
+              "start_date": "{{today:yyyy-MM-dd}}",
+              "target_date": "{{today:yyyy-MM-dd}}"
+            }] }
+            """,
+            RelationJsonByIssue =
+            {
+                ["issue-795"] = """
+                    { "blocked_by": [{
+                      "id": "issue-793", "sequence_id": 793,
+                      "project_identifier": "SJ", "name": "已完成前置",
+                      "state_name": "已完成", "state_group": "completed"
+                    }] }
+                    """
+            }
+        };
+        using var client = new PlaneIssueClient(handler);
+
+        var issues = await client.GetIssuesAsync(PasswordSettings());
+        var focus = ScheduleSummary.Create(issues, today, 2).CurrentFocus;
+
+        Assert.Equal(1, handler.RelationRequestCount);
+        Assert.Equal("SJ-795", focus?.Key);
+        Assert.False(focus?.HasIncompletePredecessor);
+        Assert.True(Assert.Single(focus!.BlockedBy).IsCompleted);
+    }
+
+    [Fact]
     public void ParseIssues_HandlesEnterprisePlaneFields()
     {
         const string json = """
@@ -213,6 +382,115 @@ public sealed class PlaneIssueClientTests
         Assert.Single(summary.FollowUpIssues);
         Assert.Single(summary.WaitingIssues);
         Assert.Equal("dev", summary.CurrentFocus?.Id);
+    }
+
+    [Fact]
+    public void FocusSelector_ExcludesFutureAndUnscheduledHighPriorityWork()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var futureHighPriority = Issue("future", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795",
+            Title = "招募-程序-UI接入",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "S",
+            StartDate = today.AddDays(7),
+            DueDate = today.AddDays(8),
+            ParentId = "parent"
+        };
+        var unscheduledHighPriority = Issue("unscheduled", IssueKind.Task, today) with
+        {
+            Key = "SJ-796",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "S",
+            StartDate = null,
+            DueDate = null
+        };
+        var todayLowerPriority = Issue("today", IssueKind.Task, today) with
+        {
+            Key = "SJ-901",
+            Status = "待开发",
+            StateGroup = "unstarted",
+            Priority = "C",
+            StartDate = today,
+            DueDate = today
+        };
+
+        var focus = FocusIssueSelector.SelectAutomatic(
+            [futureHighPriority, unscheduledHighPriority, todayLowerPriority], today);
+
+        Assert.Equal("SJ-901", focus?.Key);
+        Assert.False(FocusIssueSelector.IsExecutableToday(futureHighPriority, today));
+        Assert.False(FocusIssueSelector.IsExecutableToday(unscheduledHighPriority, today));
+        Assert.True(FocusIssueSelector.IsExecutableToday(todayLowerPriority, today));
+    }
+
+    [Fact]
+    public void FocusSelector_PrefersInProgressWorkButHonorsManualSelection()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var waitingHighPriority = Issue("waiting", IssueKind.Task, today) with
+        {
+            Key = "SJ-900", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today, DueDate = today
+        };
+        var inProgress = Issue("progress", IssueKind.Task, today.AddDays(2)) with
+        {
+            Key = "SJ-901", Status = "开发中", StateGroup = "started",
+            Priority = "B", StartDate = today.AddDays(-1), DueDate = today.AddDays(2)
+        };
+        var futureManual = Issue("manual", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today.AddDays(7), DueDate = today.AddDays(8)
+        };
+
+        Assert.Equal(inProgress.Id, FocusIssueSelector.SelectAutomatic(
+            [waitingHighPriority, inProgress, futureManual], today)?.Id);
+        Assert.Equal(futureManual.Id, FocusIssueSelector.Select(
+            [waitingHighPriority, inProgress, futureManual], today, futureManual.Id)?.Id);
+    }
+
+    [Fact]
+    public void FocusSelector_ReturnsNoAutomaticFocusWhenNothingIsExecutable()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var future = Issue("future", IssueKind.Task, today.AddDays(2)) with
+        {
+            StartDate = today.AddDays(1), DueDate = today.AddDays(2), Priority = "S"
+        };
+        var unscheduled = Issue("unscheduled", IssueKind.Task, today) with
+        {
+            StartDate = null, DueDate = null, Priority = "S"
+        };
+
+        Assert.Null(FocusIssueSelector.SelectAutomatic([future, unscheduled], today));
+    }
+
+    [Fact]
+    public void ScheduleAndDailySummary_UseTheSameAutomaticFocus()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var futureHighPriority = Issue("future", IssueKind.Task, today.AddDays(8)) with
+        {
+            Key = "SJ-795", Status = "待开发", StateGroup = "unstarted",
+            Priority = "S", StartDate = today.AddDays(7), DueDate = today.AddDays(8)
+        };
+        var current = Issue("current", IssueKind.Task, today) with
+        {
+            Key = "SJ-901", Status = "待开发", StateGroup = "unstarted",
+            Priority = "C", StartDate = today, DueDate = today
+        };
+        var issues = new[] { futureHighPriority, current };
+
+        var schedule = ScheduleSummary.Create(issues, today, 2);
+        var daily = DailyWorkSummary.Create(issues, [], today, null);
+
+        Assert.Equal("SJ-901", schedule.CurrentFocus?.Key);
+        Assert.Equal(schedule.CurrentFocus?.Id, daily.FocusIssue?.Id);
+        Assert.False(daily.FocusIsManual);
     }
 
     [Fact]
@@ -400,7 +678,7 @@ public sealed class PlaneIssueClientTests
             Assert.Equal(NotificationKind.DueToday, notification.Kind);
             Assert.Equal("SJ-901", notification.IssueKey);
             Assert.Equal("今天到期  ·  开发中",
-                NotificationCenterForm.NotificationDescription(notification));
+                NotificationCenterPage.NotificationDescription(notification));
 
             store.Acknowledge(notification.Id);
             Assert.Empty(store.AddDueToday([dueToday], today, detectedAt.AddHours(2)));
@@ -581,6 +859,10 @@ public sealed class PlaneIssueClientTests
         public int SignInCount { get; private set; }
         public int UserRequestCount { get; private set; }
         public bool RejectSecondUserRequest { get; init; }
+        public string IssuesJson { get; init; } = "{\"results\":[]}";
+        public Dictionary<string, string> RelationJsonByIssue { get; init; } = [];
+        public int RelationRequestCount { get; private set; }
+        public List<string> RelationRequestedIssueIds { get; } = [];
         public List<string?> BearerTokens { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
@@ -607,6 +889,21 @@ public sealed class PlaneIssueClientTests
                 }
 
                 return Json("{\"id\":\"user-1\"}");
+            }
+
+            if (path.EndsWith("/issue-relation/", StringComparison.Ordinal))
+            {
+                RelationRequestCount++;
+                var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                var issueId = segments[^2];
+                RelationRequestedIssueIds.Add(issueId);
+                return Json(RelationJsonByIssue.GetValueOrDefault(issueId,
+                    "{\"blocked_by\":[]}"));
+            }
+
+            if (path == "/api/workspaces/jx/issues/")
+            {
+                return Json(IssuesJson);
             }
 
             return path.Contains("/issues/", StringComparison.Ordinal)

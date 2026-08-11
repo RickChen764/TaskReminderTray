@@ -10,7 +10,8 @@ internal sealed record DailyWorkSummary(
     IReadOnlyList<IssueItem> OverdueIssues,
     IReadOnlyList<IssueItem> TomorrowIssues,
     IReadOnlyList<IssueItem> UnscheduledIssues,
-    IReadOnlyList<PersistentNotification> RecentStatusChanges)
+    IReadOnlyList<PersistentNotification> RecentStatusChanges,
+    bool FocusIsManual)
 {
     public static DailyWorkSummary Create(
         IReadOnlyList<IssueItem> issues,
@@ -19,10 +20,10 @@ internal sealed record DailyWorkSummary(
         string? focusIssueId)
     {
         var active = issues.Where(issue => !issue.IsCompleted).ToArray();
-        var focus = active.FirstOrDefault(issue => string.Equals(issue.Id, focusIssueId,
-                        StringComparison.OrdinalIgnoreCase)) ??
-                    Order(active.Where(issue => issue.Stage == WorkStage.Development), date)
-                        .FirstOrDefault();
+        var manualFocus = active.FirstOrDefault(issue =>
+            !string.IsNullOrWhiteSpace(focusIssueId) &&
+            string.Equals(issue.Id, focusIssueId, StringComparison.OrdinalIgnoreCase));
+        var focus = FocusIssueSelector.Select(active, date, focusIssueId);
         var recentStart = date.AddDays(-1).ToDateTime(TimeOnly.MinValue);
 
         return new DailyWorkSummary(
@@ -42,7 +43,8 @@ internal sealed record DailyWorkSummary(
                 .Where(notification => notification.Kind == NotificationKind.StatusChange &&
                                        notification.ChangedAt.ToLocalTime().DateTime >= recentStart)
                 .OrderByDescending(notification => notification.ChangedAt)
-                .ToArray());
+                .ToArray(),
+            manualFocus is not null);
     }
 
     private static IssueItem[] Order(IEnumerable<IssueItem> issues, DateOnly date) => issues

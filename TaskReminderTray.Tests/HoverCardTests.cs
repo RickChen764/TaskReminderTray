@@ -64,10 +64,6 @@ public sealed class HoverCardTests
         Assert.True(map.WeekNavigation[0].Bounds.Right <= map.WeekNavigation[1].Bounds.Left);
         Assert.True(map.WeekNavigation[1].Bounds.Right <= map.WeekNavigation[2].Bounds.Left);
         Assert.All(map.WeekNavigation, item => Assert.True(item.Bounds.Bottom < 50));
-        Assert.False(map.NotificationCenterBounds.IsEmpty);
-        Assert.True(map.NotificationCenterBounds.Bottom < 50);
-        Assert.False(map.DailySummaryBounds.IsEmpty);
-        Assert.True(map.DailySummaryBounds.Right <= map.NotificationCenterBounds.Left);
     }
 
     [Theory]
@@ -170,25 +166,39 @@ public sealed class HoverCardTests
     }
 
     [Theory]
-    [InlineData(96, 640, 560)]
-    [InlineData(144, 960, 840)]
-    [InlineData(192, 1280, 1120)]
-    public void NotificationCenter_DpiScalingKeepsLogicalSizeStable(
+    [InlineData(96, 760, 700)]
+    [InlineData(144, 1140, 1050)]
+    [InlineData(192, 1520, 1400)]
+    public void UnifiedDetails_DpiScalingKeepsLogicalSizeStable(
         int dpi, int expectedWidth, int expectedHeight)
     {
         Assert.Equal(new Size(expectedWidth, expectedHeight),
-            NotificationCenterForm.LogicalSizeForDpi(dpi));
+            ScheduleDetailsForm.LogicalSizeForDpi(dpi));
+    }
+
+    [Fact]
+    public void UnifiedDetails_UsesThreeStableTabs()
+    {
+        Assert.Equal([DetailsTab.Schedule, DetailsTab.DailySummary,
+                DetailsTab.Notifications],
+            Enum.GetValues<DetailsTab>());
     }
 
     [Theory]
-    [InlineData(96, 680, 660)]
-    [InlineData(144, 1020, 990)]
-    [InlineData(192, 1360, 1320)]
-    public void DailySummary_DpiScalingKeepsLogicalSizeStable(
-        int dpi, int expectedWidth, int expectedHeight)
+    [InlineData(460, 460, 900, 0, 440, 235, 0)]
+    [InlineData(460, 460, 900, 220, 440, 235, 112)]
+    [InlineData(460, 460, 900, 440, 440, 235, 225)]
+    [InlineData(460, 460, 400, 100, 0, 460, 0)]
+    public void DailySummary_CustomScrollbarMapsOffsetToThumb(
+        int trackHeight, int viewportHeight, int contentHeight, int offset,
+        int expectedMaximum, int expectedThumbHeight, int expectedThumbTop)
     {
-        Assert.Equal(new Size(expectedWidth, expectedHeight),
-            DailySummaryForm.LogicalSizeForDpi(dpi));
+        var metrics = DailySummaryPage.ScrollMetrics(
+            trackHeight, viewportHeight, contentHeight, offset);
+
+        Assert.Equal(expectedMaximum, metrics.Maximum);
+        Assert.Equal(expectedThumbHeight, metrics.ThumbHeight);
+        Assert.Equal(expectedThumbTop, metrics.ThumbTop);
     }
 
     [Fact]

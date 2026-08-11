@@ -20,8 +20,6 @@ internal sealed class HoverCardContent
     public int WeekOffset { get; set; }
     public ScheduleWeekNavigation? HoveredWeekNavigation { get; set; }
     public int UnreadNotificationCount { get; set; }
-    public bool NotificationCenterHovered { get; set; }
-    public bool DailySummaryHovered { get; set; }
 
     public DateOnly DisplayedWeekStart =>
         ScheduleSummary.StartOfWeek(Today).AddDays(WeekOffset * 7);
@@ -140,16 +138,12 @@ internal sealed class ScheduleInteractionMap
     public List<ScheduleIssueRegion> Issues { get; } = [];
     public List<ScheduleExpandRegion> Expanders { get; } = [];
     public List<ScheduleWeekNavigationRegion> WeekNavigation { get; } = [];
-    public Rectangle NotificationCenterBounds { get; set; }
-    public Rectangle DailySummaryBounds { get; set; }
 
     public void Clear()
     {
         Issues.Clear();
         Expanders.Clear();
         WeekNavigation.Clear();
-        NotificationCenterBounds = Rectangle.Empty;
-        DailySummaryBounds = Rectangle.Empty;
         FocusIssue = null;
     }
 
@@ -273,7 +267,6 @@ internal static class UsageHoverCardRenderer
         var weekStart = content.DisplayedWeekStart;
         var weekEnd = weekStart.AddDays(6);
 
-        using var headingFont = Font(18F, FontStyle.Bold, dpi);
         using var sectionFont = Font(13F, FontStyle.Regular, dpi);
         using var dayFont = Font(11F, FontStyle.Bold, dpi);
         using var dateFont = Font(10F, FontStyle.Regular, dpi);
@@ -287,8 +280,7 @@ internal static class UsageHoverCardRenderer
         using var mutedBrush = new SolidBrush(MutedText);
 
         DrawHeader(graphics, x, width, y, dpi, content, weekStart, weekEnd,
-            headingFont, taskFont, smallFont, primaryBrush, secondaryBrush, mutedBrush,
-            interactions);
+            taskFont, smallFont, secondaryBrush, mutedBrush, interactions);
         y += Scale(52, dpi);
 
         var focus = content.FocusIssue;
@@ -371,13 +363,12 @@ internal static class UsageHoverCardRenderer
 
     private static void DrawHeader(Graphics graphics, int x, int width, int y, int dpi,
         HoverCardContent content, DateOnly weekStart, DateOnly weekEnd,
-        Font headingFont, Font taskFont, Font smallFont, Brush primaryBrush,
-        Brush secondaryBrush, Brush mutedBrush, ScheduleInteractionMap? interactions)
+        Font taskFont, Font smallFont, Brush secondaryBrush, Brush mutedBrush,
+        ScheduleInteractionMap? interactions)
     {
         var dateWidth = Scale(116, dpi);
         var navigationWidth = Scale(152, dpi);
-        var navigationBounds = new Rectangle(x + (width - navigationWidth) / 2 -
-                                              Scale(12, dpi),
+        var navigationBounds = new Rectangle(x,
             y, navigationWidth, Scale(32, dpi));
         var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
             Scale(40, dpi), navigationBounds.Height);
@@ -385,33 +376,12 @@ internal static class UsageHoverCardRenderer
             Scale(72, dpi), navigationBounds.Height);
         var nextBounds = new Rectangle(currentBounds.Right, navigationBounds.Top,
             Scale(40, dpi), navigationBounds.Height);
-        graphics.DrawString("开发安排", headingFont, primaryBrush,
-            new RectangleF(x, y + Scale(2, dpi),
-                navigationBounds.Left - x - Scale(18, dpi), Scale(29, dpi)));
         using var right = new StringFormat { Alignment = StringAlignment.Far };
         graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
             new RectangleF(x + width - dateWidth, y, dateWidth, Scale(21, dpi)), right);
         graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
             new RectangleF(x + width - dateWidth, y + Scale(20, dpi), dateWidth,
                 Scale(16, dpi)), right);
-        var notificationBounds = new Rectangle(
-            x + width - dateWidth - Scale(94, dpi), y,
-            Scale(80, dpi), Scale(32, dpi));
-        var summaryBounds = new Rectangle(notificationBounds.Left - Scale(78, dpi), y,
-            Scale(70, dpi), Scale(32, dpi));
-        DrawHeaderActionButton(graphics, summaryBounds, dpi, "摘要",
-            content.DailySummaryHovered, false, smallFont);
-        DrawHeaderActionButton(graphics, notificationBounds, dpi,
-            content.UnreadNotificationCount > 0
-                ? $"通知  {Math.Min(99, content.UnreadNotificationCount)}"
-                : "通知",
-            content.NotificationCenterHovered,
-            content.UnreadNotificationCount > 0, smallFont);
-        if (interactions is not null)
-        {
-            interactions.DailySummaryBounds = summaryBounds;
-            interactions.NotificationCenterBounds = notificationBounds;
-        }
         DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
             currentBounds, nextBounds, dpi, content);
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
@@ -420,41 +390,6 @@ internal static class UsageHoverCardRenderer
             currentBounds, ScheduleWeekNavigation.Current));
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
             nextBounds, ScheduleWeekNavigation.Next));
-    }
-
-    private static void DrawHeaderActionButton(
-        Graphics graphics,
-        Rectangle bounds,
-        int dpi,
-        string text,
-        bool hovered,
-        bool emphasized,
-        Font font)
-    {
-        var fill = hovered
-            ? Color.FromArgb(42, 48, 58)
-            : Color.FromArgb(28, 32, 39);
-        FillRoundedRectangle(graphics, bounds, Scale(6, dpi), fill);
-        using var path = RoundedRectangle(bounds, Scale(6, dpi));
-        using var pen = new Pen(hovered
-            ? Color.FromArgb(79, 91, 110)
-            : Border, ScaleF(1, dpi));
-        graphics.DrawPath(pen, path);
-
-        using var brush = new SolidBrush(emphasized ? PrimaryText : SecondaryText);
-        using var centered = new StringFormat
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        graphics.DrawString(text, font, brush, bounds, centered);
-        if (emphasized)
-        {
-            using var dot = new SolidBrush(Orange);
-            graphics.FillEllipse(dot, bounds.Right - Scale(10, dpi),
-                bounds.Top + Scale(5, dpi), Scale(5, dpi), Scale(5, dpi));
-        }
     }
 
     private static void DrawSectionLabel(Graphics graphics, string text, int x, int y,
@@ -499,7 +434,10 @@ internal static class UsageHoverCardRenderer
         using var stateBrush = new SolidBrush(Green);
         using var stateFormat = new StringFormat { Alignment = StringAlignment.Far,
             LineAlignment = StringAlignment.Center };
-        graphics.DrawString("今日重点", smallFont, stateBrush, stateBounds, stateFormat);
+        graphics.DrawString(string.IsNullOrWhiteSpace(content.FocusIssueId)
+                ? "自动重点"
+                : "手动重点",
+            smallFont, stateBrush, stateBounds, stateFormat);
         if (interactions is not null)
         {
             var region = new ScheduleIssueRegion(Rectangle.Round(titleBounds), stateBounds,

@@ -3,7 +3,7 @@ using TaskReminderTray.Services;
 
 namespace TaskReminderTray;
 
-internal sealed class NotificationCenterForm : Form
+internal sealed class NotificationCenterPage : UserControl
 {
     private static readonly Color Background = Color.FromArgb(24, 27, 33);
     private static readonly Color Surface = Color.FromArgb(31, 35, 43);
@@ -17,49 +17,19 @@ internal sealed class NotificationCenterForm : Form
 
     private readonly Label _summaryLabel = new();
     private readonly Button _acknowledgeAllButton = new();
-    private readonly FlowLayoutPanel _headingStack = new();
     private readonly FlowLayoutPanel _list = new();
     private readonly Label _emptyLabel = new();
     private IReadOnlyList<PersistentNotification> _notifications = [];
-    private bool _shuttingDown;
-
     public event EventHandler<string>? AcknowledgeRequested;
     public event EventHandler? AcknowledgeAllRequested;
 
-    public NotificationCenterForm()
+    public NotificationCenterPage()
     {
-        Text = "通知中心";
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        TopMost = true;
-        StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(640, 560);
-        MinimumSize = new Size(560, 420);
+        Dock = DockStyle.Fill;
         BackColor = Background;
         Font = new Font("Microsoft YaHei UI", 9F);
         BuildInterface();
-        Deactivate += (_, _) => Hide();
-        Paint += (_, e) =>
-        {
-            using var pen = new Pen(Border);
-            e.Graphics.DrawRectangle(pen, 0, 0,
-                ClientSize.Width - 1, ClientSize.Height - 1);
-        };
-    }
-
-    public void ShowCenter(IReadOnlyList<PersistentNotification> notifications,
-        Rectangle anchorBounds)
-    {
-        SetNotifications(notifications);
-        PositionNear(anchorBounds);
-        if (!Visible)
-        {
-            Show();
-        }
-
-        Activate();
-        BringToFront();
     }
 
     public void SetNotifications(IReadOnlyList<PersistentNotification> notifications)
@@ -76,62 +46,17 @@ internal sealed class NotificationCenterForm : Form
         RebuildList();
     }
 
-    public void Shutdown()
-    {
-        _shuttingDown = true;
-        Close();
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (!_shuttingDown && e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            Hide();
-        }
-
-        base.OnFormClosing(e);
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.Escape)
-        {
-            Hide();
-            return true;
-        }
-
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
     private void BuildInterface()
     {
-        var heading = new Label
-        {
-            Text = "通知中心",
-            ForeColor = PrimaryText,
-            Font = new Font(Font.FontFamily, 15F, FontStyle.Bold),
-            AutoSize = true,
-            Margin = new Padding(0)
-        };
         _summaryLabel.ForeColor = MutedText;
+        _summaryLabel.Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold);
         _summaryLabel.AutoSize = true;
-        _summaryLabel.Margin = new Padding(1, 2, 0, 0);
-
-        // 让布局系统按当前 DPI 下的真实字体高度排列两行文字，避免固定 Y 坐标
-        // 在 125%/150% 缩放下造成标题裁切或副标题覆盖。
-        _headingStack.FlowDirection = FlowDirection.TopDown;
-        _headingStack.WrapContents = false;
-        _headingStack.AutoSize = false;
-        _headingStack.BackColor = Background;
-        _headingStack.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _headingStack.SetBounds(22, 12, ClientSize.Width - 190, 66);
-        _headingStack.Controls.AddRange([heading, _summaryLabel]);
+        _summaryLabel.Location = new Point(24, 19);
 
         _acknowledgeAllButton.Text = "全部标为已读";
         StyleButton(_acknowledgeAllButton, secondary: false);
         _acknowledgeAllButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _acknowledgeAllButton.SetBounds(ClientSize.Width - 150, 20, 128, 36);
+        _acknowledgeAllButton.SetBounds(ClientSize.Width - 152, 10, 128, 36);
         _acknowledgeAllButton.Click += (_, _) => AcknowledgeAllRequested?.Invoke(this,
             EventArgs.Empty);
 
@@ -139,8 +64,8 @@ internal sealed class NotificationCenterForm : Form
         {
             BackColor = Border,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            Location = new Point(22, 82),
-            Size = new Size(ClientSize.Width - 44, 1)
+            Location = new Point(24, 57),
+            Size = new Size(ClientSize.Width - 48, 1)
         };
 
         _list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
@@ -150,7 +75,7 @@ internal sealed class NotificationCenterForm : Form
         _list.WrapContents = false;
         _list.BackColor = Background;
         _list.Padding = new Padding(0, 0, 8, 0);
-        _list.SetBounds(22, 99, ClientSize.Width - 44, ClientSize.Height - 121);
+        _list.SetBounds(24, 74, ClientSize.Width - 48, ClientSize.Height - 92);
         _list.SizeChanged += (_, _) => ResizeRows();
 
         _emptyLabel.Text = "暂无状态变化\n刷新后检测到的工单状态变化会出现在这里";
@@ -158,10 +83,10 @@ internal sealed class NotificationCenterForm : Form
         _emptyLabel.TextAlign = ContentAlignment.MiddleCenter;
         _emptyLabel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
                              AnchorStyles.Left | AnchorStyles.Right;
-        _emptyLabel.SetBounds(22, 99, ClientSize.Width - 44, ClientSize.Height - 121);
+        _emptyLabel.SetBounds(24, 74, ClientSize.Width - 48, ClientSize.Height - 92);
         _emptyLabel.Visible = false;
 
-        Controls.AddRange([_headingStack, _acknowledgeAllButton,
+        Controls.AddRange([_summaryLabel, _acknowledgeAllButton,
             separator, _list, _emptyLabel]);
     }
 
@@ -288,10 +213,6 @@ internal sealed class NotificationCenterForm : Form
         }
     }
 
-    internal static Size LogicalSizeForDpi(int dpi) => new(
-        (int)Math.Round(640 * dpi / 96F),
-        (int)Math.Round(560 * dpi / 96F));
-
     private static void StyleButton(Button button, bool secondary)
     {
         button.FlatStyle = FlatStyle.Flat;
@@ -302,21 +223,6 @@ internal sealed class NotificationCenterForm : Form
         button.ForeColor = secondary ? SecondaryText : Color.White;
         button.Cursor = Cursors.Hand;
         button.UseVisualStyleBackColor = false;
-    }
-
-    private void PositionNear(Rectangle anchorBounds)
-    {
-        var area = Screen.FromRectangle(anchorBounds).WorkingArea;
-        var margin = Math.Max(10, (int)Math.Round(10 * DeviceDpi / 96F));
-        var x = anchorBounds.Right - Width;
-        var y = anchorBounds.Top >= area.Bottom
-            ? area.Bottom - Height - margin
-            : area.Top + margin;
-        Location = new Point(
-            Math.Clamp(x, area.Left + margin, Math.Max(area.Left + margin,
-                area.Right - Width - margin)),
-            Math.Clamp(y, area.Top + margin, Math.Max(area.Top + margin,
-                area.Bottom - Height - margin)));
     }
 
     private static void OpenIssue(string sourceUrl)
