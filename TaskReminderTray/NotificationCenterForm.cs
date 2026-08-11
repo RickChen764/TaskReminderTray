@@ -17,7 +17,6 @@ internal sealed class NotificationCenterForm : Form
 
     private readonly Label _summaryLabel = new();
     private readonly Button _acknowledgeAllButton = new();
-    private readonly Button _closeButton = new();
     private readonly FlowLayoutPanel _headingStack = new();
     private readonly FlowLayoutPanel _list = new();
     private readonly Label _emptyLabel = new();
@@ -126,24 +125,15 @@ internal sealed class NotificationCenterForm : Form
         _headingStack.AutoSize = false;
         _headingStack.BackColor = Background;
         _headingStack.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _headingStack.SetBounds(22, 12, ClientSize.Width - 250, 66);
+        _headingStack.SetBounds(22, 12, ClientSize.Width - 190, 66);
         _headingStack.Controls.AddRange([heading, _summaryLabel]);
 
         _acknowledgeAllButton.Text = "全部标为已读";
         StyleButton(_acknowledgeAllButton, secondary: false);
         _acknowledgeAllButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _acknowledgeAllButton.SetBounds(ClientSize.Width - 224, 20, 128, 36);
+        _acknowledgeAllButton.SetBounds(ClientSize.Width - 150, 20, 128, 36);
         _acknowledgeAllButton.Click += (_, _) => AcknowledgeAllRequested?.Invoke(this,
             EventArgs.Empty);
-
-        _closeButton.Text = "关闭";
-        StyleButton(_closeButton, secondary: true);
-        _closeButton.ForeColor = PrimaryText;
-        _closeButton.TextAlign = ContentAlignment.MiddleCenter;
-        _closeButton.Padding = Padding.Empty;
-        _closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _closeButton.SetBounds(ClientSize.Width - 86, 20, 64, 36);
-        _closeButton.Click += (_, _) => Hide();
 
         var separator = new Panel
         {
@@ -172,7 +162,7 @@ internal sealed class NotificationCenterForm : Form
         _emptyLabel.Visible = false;
 
         Controls.AddRange([_headingStack, _acknowledgeAllButton,
-            _closeButton, separator, _list, _emptyLabel]);
+            separator, _list, _emptyLabel]);
     }
 
     private void RebuildList()
