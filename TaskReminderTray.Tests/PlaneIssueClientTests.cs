@@ -488,6 +488,73 @@ public sealed class PlaneIssueClientTests
         }
     }
 
+    [Fact]
+    public void DailyWorkSummary_PrioritizesTodayRisksAndRecentChanges()
+    {
+        var today = new DateOnly(2026, 8, 11);
+        var focus = Issue("focus", IssueKind.Task, today) with
+        {
+            Key = "SJ-901", Priority = "S", StartDate = today.AddDays(-1),
+            DueDate = today, Status = "开发中"
+        };
+        var overdue = Issue("overdue", IssueKind.Bug, today.AddDays(-1)) with
+        {
+            Key = "SJ-902", DueDate = today.AddDays(-1), Status = "待测试"
+        };
+        var tomorrow = Issue("tomorrow", IssueKind.Task, today.AddDays(1)) with
+        {
+            Key = "SJ-903", StartDate = today.AddDays(1), DueDate = today.AddDays(1)
+        };
+        var unscheduled = Issue("unscheduled", IssueKind.Task, today) with
+        {
+            Key = "SJ-904", StartDate = null, DueDate = null
+        };
+        var changedAt = new DateTimeOffset(2026, 8, 11, 8, 30, 0,
+            TimeSpan.FromHours(8));
+        var changes = new[]
+        {
+            PersistentNotification.FromChange(new IssueChange(focus.Id, focus.Key,
+                focus.Title, "待开发", "开发中", changedAt, focus.SourceUrl)),
+            PersistentNotification.DueToday(focus, today, changedAt)
+        };
+
+        var summary = DailyWorkSummary.Create(
+            [focus, overdue, tomorrow, unscheduled], changes, today, focus.Id);
+
+        Assert.Equal(focus.Id, summary.FocusIssue?.Id);
+        Assert.Contains(summary.TodayIssues, issue => issue.Id == focus.Id);
+        Assert.Single(summary.DueTodayIssues);
+        Assert.Single(summary.OverdueIssues);
+        Assert.Single(summary.TomorrowIssues);
+        Assert.Single(summary.UnscheduledIssues);
+        Assert.Single(summary.RecentStatusChanges);
+        Assert.Equal(NotificationKind.StatusChange, summary.RecentStatusChanges[0].Kind);
+    }
+
+    [Fact]
+    public void PersonalWorkStore_PersistsDailySummaryShownDate()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"task-reminder-summary-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "personal.json");
+        try
+        {
+            var store = new PersonalWorkStore(path);
+            var date = new DateOnly(2026, 8, 11);
+
+            store.MarkDailySummaryShown(date);
+
+            Assert.Equal(date, store.Load().LastDailySummaryShownDate);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     private static IssueItem Issue(
         string id,
         IssueKind kind,

@@ -13,9 +13,10 @@ internal sealed record SnoozedWorkReminder(
 
 internal sealed record PersonalWorkState(
     string? FocusIssueId,
-    IReadOnlyList<SnoozedWorkReminder> Reminders)
+    IReadOnlyList<SnoozedWorkReminder> Reminders,
+    DateOnly? LastDailySummaryShownDate = null)
 {
-    public static PersonalWorkState Empty { get; } = new(null, []);
+    public static PersonalWorkState Empty { get; } = new(null, [], null);
 }
 
 internal sealed class PersonalWorkStore
@@ -103,6 +104,13 @@ internal sealed class PersonalWorkStore
                 .OrderBy(reminder => reminder.RemindAt)
                 .ToArray()
         };
+        Save(state);
+        return state;
+    }
+
+    public PersonalWorkState MarkDailySummaryShown(DateOnly date)
+    {
+        var state = Load() with { LastDailySummaryShownDate = date };
         Save(state);
         return state;
     }

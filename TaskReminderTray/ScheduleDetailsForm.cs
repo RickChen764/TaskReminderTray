@@ -22,6 +22,7 @@ internal sealed class ScheduleDetailsForm : Form
     public event Action<IssueItem?>? FocusChanged;
     public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
     public event Action? NotificationCenterRequested;
+    public event Action? DailySummaryRequested;
 
     public ScheduleDetailsForm()
     {
@@ -40,6 +41,7 @@ internal sealed class ScheduleDetailsForm : Form
         _surface.SnoozeRequested += (issue, remindAt) =>
             SnoozeRequested?.Invoke(issue, remindAt);
         _surface.NotificationCenterRequested += () => NotificationCenterRequested?.Invoke();
+        _surface.DailySummaryRequested += () => DailySummaryRequested?.Invoke();
         _surface.MenuOpening += () => _allowDeactivateClose = false;
         _surface.MenuClosed += () =>
         {
@@ -195,6 +197,7 @@ internal sealed class ScheduleDetailsForm : Form
         public event Action<IssueItem?>? FocusChanged;
         public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
         public event Action? NotificationCenterRequested;
+        public event Action? DailySummaryRequested;
         public event Action? MenuOpening;
         public event Action? MenuClosed;
 
@@ -216,6 +219,7 @@ internal sealed class ScheduleDetailsForm : Form
             {
                 SetHoveredWeekNavigation(null);
                 SetNotificationCenterHovered(false);
+                SetDailySummaryHovered(false);
             };
             MouseUp += DetailsSurface_MouseUp;
         }
@@ -258,11 +262,24 @@ internal sealed class ScheduleDetailsForm : Form
             SetHoveredWeekNavigation(weekNavigation?.Navigation);
             SetNotificationCenterHovered(
                 _interactions.NotificationCenterBounds.Contains(e.Location));
+            SetDailySummaryHovered(_interactions.DailySummaryBounds.Contains(e.Location));
             Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location)) ||
                      weekNavigation is not null ||
-                     _interactions.NotificationCenterBounds.Contains(e.Location)
+                     _interactions.NotificationCenterBounds.Contains(e.Location) ||
+                     _interactions.DailySummaryBounds.Contains(e.Location)
                 ? Cursors.Hand
                 : Cursors.Default;
+        }
+
+        private void SetDailySummaryHovered(bool hovered)
+        {
+            if (_content is null || _content.DailySummaryHovered == hovered)
+            {
+                return;
+            }
+
+            _content.DailySummaryHovered = hovered;
+            Invalidate(_interactions.DailySummaryBounds);
         }
 
         private void SetNotificationCenterHovered(bool hovered)
@@ -306,6 +323,12 @@ internal sealed class ScheduleDetailsForm : Form
             if (_interactions.NotificationCenterBounds.Contains(e.Location))
             {
                 NotificationCenterRequested?.Invoke();
+                return;
+            }
+
+            if (_interactions.DailySummaryBounds.Contains(e.Location))
+            {
+                DailySummaryRequested?.Invoke();
                 return;
             }
 

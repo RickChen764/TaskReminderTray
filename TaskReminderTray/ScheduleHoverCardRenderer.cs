@@ -21,6 +21,7 @@ internal sealed class HoverCardContent
     public ScheduleWeekNavigation? HoveredWeekNavigation { get; set; }
     public int UnreadNotificationCount { get; set; }
     public bool NotificationCenterHovered { get; set; }
+    public bool DailySummaryHovered { get; set; }
 
     public DateOnly DisplayedWeekStart =>
         ScheduleSummary.StartOfWeek(Today).AddDays(WeekOffset * 7);
@@ -140,6 +141,7 @@ internal sealed class ScheduleInteractionMap
     public List<ScheduleExpandRegion> Expanders { get; } = [];
     public List<ScheduleWeekNavigationRegion> WeekNavigation { get; } = [];
     public Rectangle NotificationCenterBounds { get; set; }
+    public Rectangle DailySummaryBounds { get; set; }
 
     public void Clear()
     {
@@ -147,6 +149,7 @@ internal sealed class ScheduleInteractionMap
         Expanders.Clear();
         WeekNavigation.Clear();
         NotificationCenterBounds = Rectangle.Empty;
+        DailySummaryBounds = Rectangle.Empty;
         FocusIssue = null;
     }
 
@@ -373,7 +376,8 @@ internal static class UsageHoverCardRenderer
     {
         var dateWidth = Scale(116, dpi);
         var navigationWidth = Scale(152, dpi);
-        var navigationBounds = new Rectangle(x + (width - navigationWidth) / 2,
+        var navigationBounds = new Rectangle(x + (width - navigationWidth) / 2 -
+                                              Scale(12, dpi),
             y, navigationWidth, Scale(32, dpi));
         var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
             Scale(40, dpi), navigationBounds.Height);
@@ -393,10 +397,19 @@ internal static class UsageHoverCardRenderer
         var notificationBounds = new Rectangle(
             x + width - dateWidth - Scale(94, dpi), y,
             Scale(80, dpi), Scale(32, dpi));
-        DrawNotificationCenterButton(graphics, notificationBounds, dpi, content,
-            smallFont);
+        var summaryBounds = new Rectangle(notificationBounds.Left - Scale(78, dpi), y,
+            Scale(70, dpi), Scale(32, dpi));
+        DrawHeaderActionButton(graphics, summaryBounds, dpi, "摘要",
+            content.DailySummaryHovered, false, smallFont);
+        DrawHeaderActionButton(graphics, notificationBounds, dpi,
+            content.UnreadNotificationCount > 0
+                ? $"通知  {Math.Min(99, content.UnreadNotificationCount)}"
+                : "通知",
+            content.NotificationCenterHovered,
+            content.UnreadNotificationCount > 0, smallFont);
         if (interactions is not null)
         {
+            interactions.DailySummaryBounds = summaryBounds;
             interactions.NotificationCenterBounds = notificationBounds;
         }
         DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
@@ -409,26 +422,26 @@ internal static class UsageHoverCardRenderer
             nextBounds, ScheduleWeekNavigation.Next));
     }
 
-    private static void DrawNotificationCenterButton(
+    private static void DrawHeaderActionButton(
         Graphics graphics,
         Rectangle bounds,
         int dpi,
-        HoverCardContent content,
+        string text,
+        bool hovered,
+        bool emphasized,
         Font font)
     {
-        var fill = content.NotificationCenterHovered
+        var fill = hovered
             ? Color.FromArgb(42, 48, 58)
             : Color.FromArgb(28, 32, 39);
         FillRoundedRectangle(graphics, bounds, Scale(6, dpi), fill);
         using var path = RoundedRectangle(bounds, Scale(6, dpi));
-        using var pen = new Pen(content.NotificationCenterHovered
+        using var pen = new Pen(hovered
             ? Color.FromArgb(79, 91, 110)
             : Border, ScaleF(1, dpi));
         graphics.DrawPath(pen, path);
 
-        var unread = Math.Min(99, Math.Max(0, content.UnreadNotificationCount));
-        var text = unread > 0 ? $"通知  {unread}" : "通知";
-        using var brush = new SolidBrush(unread > 0 ? PrimaryText : SecondaryText);
+        using var brush = new SolidBrush(emphasized ? PrimaryText : SecondaryText);
         using var centered = new StringFormat
         {
             Alignment = StringAlignment.Center,
@@ -436,7 +449,7 @@ internal static class UsageHoverCardRenderer
             FormatFlags = StringFormatFlags.NoWrap
         };
         graphics.DrawString(text, font, brush, bounds, centered);
-        if (unread > 0)
+        if (emphasized)
         {
             using var dot = new SolidBrush(Orange);
             graphics.FillEllipse(dot, bounds.Right - Scale(10, dpi),

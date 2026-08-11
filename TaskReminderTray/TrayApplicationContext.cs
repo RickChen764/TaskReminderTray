@@ -17,6 +17,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ReminderEvaluator _reminderEvaluator = new();
     private readonly PersistentNotificationForm _notificationForm = new();
     private readonly NotificationCenterForm _notificationCenterForm = new();
+    private readonly DailySummaryForm _dailySummaryForm = new();
     private readonly ScheduleDetailsForm _detailsForm = new();
     private readonly SnoozedReminderForm _snoozedReminderForm = new();
     private readonly NotifyIcon _notifyIcon;
@@ -35,6 +36,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _updatedItem = new("最后更新：--") { Enabled = false };
     private readonly ToolStripMenuItem _refreshItem = new("立即刷新");
     private readonly ToolStripMenuItem _notificationCenterItem = new("通知中心");
+    private readonly ToolStripMenuItem _dailySummaryItem = new("今日工作摘要")
+    {
+        Enabled = false
+    };
     private readonly ToolStripMenuItem _doNotDisturbMenu = new("免打扰");
     private readonly ToolStripMenuItem _doNotDisturbStatusItem = new("当前：未开启")
     {
@@ -61,6 +66,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
     private UpdateRelease? _availableUpdate;
     private HoverCardContent? _detailsContent;
+    private DailyWorkSummary? _dailySummary;
     private PersonalWorkState _personalWorkState;
 
     public TrayApplicationContext()
@@ -74,6 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_updatedItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_refreshItem);
+        _menu.Items.Add(_dailySummaryItem);
         _menu.Items.Add(_notificationCenterItem);
         _menu.Items.Add("打开任务页面", null, (_, _) => OpenSourcePage());
         _menu.Items.Add("设置…", null, (_, _) => ShowSettings());
@@ -90,6 +97,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dismissController = new ContextMenuDismissController(_menu);
         _refreshItem.Click += async (_, _) => await RefreshAsync();
         _notificationCenterItem.Click += (_, _) => ShowNotificationCenter();
+        _dailySummaryItem.Click += (_, _) => ShowDailySummary(manual: true);
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _updateItem.Click += async (_, _) => await UpdateMenuItem_ClickAsync();
         _manualDoNotDisturbItem.Click += (_, _) => ToggleManualDoNotDisturb();
@@ -118,6 +126,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _detailsForm.FocusChanged += SetFocusIssue;
         _detailsForm.SnoozeRequested += AddSnoozedReminder;
         _detailsForm.NotificationCenterRequested += ShowNotificationCenter;
+        _detailsForm.DailySummaryRequested += () => ShowDailySummary(manual: true);
         _snoozedReminderForm.AcknowledgeRequested += AcknowledgeSnoozedReminder;
         _snoozedReminderForm.RescheduleRequested += RescheduleSnoozedReminder;
         _personalReminderTimer.Tick += (_, _) =>
@@ -239,6 +248,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             developmentOverdue > 0 || summary.DueSoonCount > 0
                 ? TrayIconState.Warning
                 : TrayIconState.Healthy);
+        UpdateDailySummary(issues, today);
+        ShowDailySummary(manual: false);
     }
 
     private void NotifyChanges(IReadOnlyList<IssueItem> issues)
@@ -374,6 +385,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _pendingNotifications = _notificationStore.Acknowledge(notificationId);
             UpdateNotificationSurfaces();
             ShowPendingNotification();
+            if (_pendingNotifications.Count == 0)
+            {
+                ShowDailySummary(manual: false);
+            }
         }
         catch (Exception exception)
         {
@@ -389,6 +404,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _pendingNotifications = _notificationStore.AcknowledgeAll();
             UpdateNotificationSurfaces();
             ShowPendingNotification();
+            ShowDailySummary(manual: false);
         }
         catch (Exception exception)
         {
@@ -400,8 +416,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ShowNotificationCenter()
     {
         _detailsForm.Hide();
+        _dailySummaryForm.Hide();
         _notificationCenterForm.ShowCenter(_notificationStore.LoadHistory(),
             _toolbar.GetScreenBounds());
+    }
+
+    private void UpdateDailySummary(IReadOnlyList<IssueItem> issues, DateOnly today)
+    {
+        _dailySummary = DailyWorkSummary.Create(issues,
+            _notificationStore.LoadHistory(), today, _personalWorkState.FocusIssueId);
+        _dailySummaryItem.Enabled = true;
+        _dailySummaryForm.SetSummary(_dailySummary);
+    }
+
+    private void ShowDailySummary(bool manual)
+    {
+        if (_dailySummary is null || (!manual &&
+            (IsDoNotDisturbActive ||
+             _pendingNotifications.Count > 0 ||
+             _personalWorkState.LastDailySummaryShownDate == _dailySummary.Date)))
+        {
+            return;
+        }
+
+        if (_personalWorkState.LastDailySummaryShownDate != _dailySummary.Date)
+        {
+            _personalWorkState = _personalWorkStore.MarkDailySummaryShown(_dailySummary.Date);
+        }
+        _detailsForm.Hide();
+        _notificationCenterForm.Hide();
+        _dailySummaryForm.ShowSummary(_dailySummary, _toolbar.GetScreenBounds());
     }
 
     private void UpdateNotificationSurfaces(bool refreshSchedule = true)
@@ -539,6 +583,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         ShowPendingNotification();
         ShowDuePersonalReminder();
+        ShowDailySummary(manual: false);
         if (stateChanged)
         {
             _ = RefreshAsync();
@@ -762,6 +807,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notificationForm.Dispose();
         _notificationCenterForm.Shutdown();
         _notificationCenterForm.Dispose();
+        _dailySummaryForm.Shutdown();
+        _dailySummaryForm.Dispose();
         _detailsForm.Shutdown();
         _detailsForm.Dispose();
         _snoozedReminderForm.Shutdown();

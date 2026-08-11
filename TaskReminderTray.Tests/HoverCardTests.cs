@@ -66,6 +66,8 @@ public sealed class HoverCardTests
         Assert.All(map.WeekNavigation, item => Assert.True(item.Bounds.Bottom < 50));
         Assert.False(map.NotificationCenterBounds.IsEmpty);
         Assert.True(map.NotificationCenterBounds.Bottom < 50);
+        Assert.False(map.DailySummaryBounds.IsEmpty);
+        Assert.True(map.DailySummaryBounds.Right <= map.NotificationCenterBounds.Left);
     }
 
     [Theory]
@@ -176,6 +178,17 @@ public sealed class HoverCardTests
     {
         Assert.Equal(new Size(expectedWidth, expectedHeight),
             NotificationCenterForm.LogicalSizeForDpi(dpi));
+    }
+
+    [Theory]
+    [InlineData(96, 680, 660)]
+    [InlineData(144, 1020, 990)]
+    [InlineData(192, 1360, 1320)]
+    public void DailySummary_DpiScalingKeepsLogicalSizeStable(
+        int dpi, int expectedWidth, int expectedHeight)
+    {
+        Assert.Equal(new Size(expectedWidth, expectedHeight),
+            DailySummaryForm.LogicalSizeForDpi(dpi));
     }
 
     [Fact]
