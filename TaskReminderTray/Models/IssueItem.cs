@@ -14,6 +14,13 @@ internal enum WorkStage
     Completed
 }
 
+internal sealed record IssuePredecessor(
+    string Id,
+    string Key,
+    string Title,
+    string Status,
+    bool IsCompleted);
+
 internal sealed record IssueItem(
     string Id,
     string Key,
@@ -30,7 +37,9 @@ internal sealed record IssueItem(
     string Priority = "未确定",
     decimal? Workload = null,
     string? ParentId = null,
-    int SubIssueCount = 0)
+    int SubIssueCount = 0,
+    string? ProjectId = null,
+    IReadOnlyList<IssuePredecessor>? Predecessors = null)
 {
     public WorkStage Stage => WorkStageClassifier.Classify(this);
 
@@ -44,6 +53,10 @@ internal sealed record IssueItem(
         "C" => 4,
         _ => 5
     };
+
+    public IReadOnlyList<IssuePredecessor> BlockedBy => Predecessors ?? [];
+
+    public bool HasIncompletePredecessor => BlockedBy.Any(item => !item.IsCompleted);
 }
 
 internal static class IssueTextFormatter
@@ -276,6 +289,11 @@ internal static class FocusIssueSelector
 
     public static IssueItem? SelectAutomatic(
         IEnumerable<IssueItem> issues,
+        DateOnly today) => RankAutomaticCandidates(issues, today)
+        .FirstOrDefault(issue => !issue.HasIncompletePredecessor);
+
+    internal static IOrderedEnumerable<IssueItem> RankAutomaticCandidates(
+        IEnumerable<IssueItem> issues,
         DateOnly today) => issues
         .Where(issue => !issue.IsCompleted &&
                         issue.Stage == WorkStage.Development &&
@@ -284,8 +302,7 @@ internal static class FocusIssueSelector
         .ThenBy(issue => DeadlineRank(issue, today))
         .ThenBy(issue => issue.PriorityRank)
         .ThenBy(issue => issue.DueDate ?? DateOnly.MaxValue)
-        .ThenBy(issue => issue.Key, StringComparer.OrdinalIgnoreCase)
-        .FirstOrDefault();
+        .ThenBy(issue => issue.Key, StringComparer.OrdinalIgnoreCase);
 
     internal static bool IsExecutableToday(IssueItem issue, DateOnly today)
     {

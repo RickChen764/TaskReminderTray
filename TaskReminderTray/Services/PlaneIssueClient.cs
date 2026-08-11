@@ -84,7 +84,9 @@ internal sealed class PlaneIssueClient : IDisposable
             : ParseStates(statesJson);
         var projects = ParseLookup(await projectsTask, "identifier", "name");
         var issueTypes = ParseLookup(await issueTypesTask, "name");
-        return ParseIssues(issuesJson, source, states, projects, issueTypes);
+        var issues = ParseIssues(issuesJson, source, states, projects, issueTypes);
+        return await EnrichAutomaticFocusRelationsAsync(issues, source, token, states,
+            projects, cancellationToken);
     }
 
     private async Task<string> SignInAndCacheAsync(
@@ -243,10 +245,116 @@ internal sealed class PlaneIssueClient : IDisposable
 
             issues.Add(new IssueItem(id, key, title, kind, status, stateGroup,
                 startDate, dueDate, updated, projectName, completed, issueUrl.ToString(),
-                priority, workload, parentId, subIssueCount));
+                priority, workload, parentId, subIssueCount, projectId));
         }
 
         return issues;
+    }
+
+    private async Task<IReadOnlyList<IssueItem>> EnrichAutomaticFocusRelationsAsync(
+        IReadOnlyList<IssueItem> issues,
+        SourceLocation source,
+        string token,
+        IReadOnlyDictionary<string, StateInfo> states,
+        IReadOnlyDictionary<string, string> projects,
+        CancellationToken cancellationToken)
+    {
+        var replacements = new Dictionary<string, IssueItem>(
+            StringComparer.OrdinalIgnoreCase);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        foreach (var candidate in FocusIssueSelector.RankAutomaticCandidates(issues, today))
+        {
+            if (string.IsNullOrWhiteSpace(candidate.ProjectId))
+            {
+                break;
+            }
+
+            var endpoint = BuildIssueRelationsEndpoint(source, candidate.ProjectId,
+                candidate.Id);
+            var json = await TryGetJsonAsync(endpoint, token, cancellationToken);
+            if (json is null)
+            {
+                // 关系接口不可用时保留原排序，不让辅助数据阻塞主列表刷新。
+                break;
+            }
+
+            var predecessors = ParsePredecessors(json, states, projects,
+                candidate.Project);
+            var enriched = candidate with { Predecessors = predecessors };
+            replacements[candidate.Id] = enriched;
+            if (!enriched.HasIncompletePredecessor)
+            {
+                break;
+            }
+        }
+
+        return replacements.Count == 0
+            ? issues
+            : issues.Select(issue => replacements.GetValueOrDefault(issue.Id, issue)).ToArray();
+    }
+
+    internal static Uri BuildIssueRelationsEndpoint(
+        SourceLocation source,
+        string projectId,
+        string issueId)
+    {
+        var workspace = Uri.EscapeDataString(source.WorkspaceSlug);
+        return new Uri(source.BaseUri,
+            $"/api/workspaces/{workspace}/projects/{Uri.EscapeDataString(projectId)}/" +
+            $"issues/{Uri.EscapeDataString(issueId)}/issue-relation/");
+    }
+
+    internal static IReadOnlyList<IssuePredecessor> ParsePredecessors(
+        string json,
+        IReadOnlyDictionary<string, StateInfo>? states = null,
+        IReadOnlyDictionary<string, string>? projects = null,
+        string? fallbackProjectIdentifier = null)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!TryGet(document.RootElement, "blocked_by", out var blockedBy) ||
+            blockedBy.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var predecessors = new List<IssuePredecessor>();
+        foreach (var item in blockedBy.EnumerateArray())
+        {
+            var id = Text(item, "id", "issue_id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            var projectId = Text(item, "project_id");
+            string? projectIdentifier = null;
+            if (projects is not null && projectId is not null)
+            {
+                projects.TryGetValue(projectId, out projectIdentifier);
+            }
+            projectIdentifier ??= Text(item, "project_identifier") ??
+                                  fallbackProjectIdentifier;
+            var sequence = Text(item, "sequence_id", "sequence", "number");
+            var key = !string.IsNullOrWhiteSpace(projectIdentifier) &&
+                      !string.IsNullOrWhiteSpace(sequence)
+                ? $"{projectIdentifier}-{sequence}"
+                : Text(item, "key", "issue_key") ?? id[..Math.Min(8, id.Length)];
+            var stateId = Text(item, "state_id") ?? Text(item, "state");
+            StateInfo? state = null;
+            if (states is not null && stateId is not null)
+            {
+                states.TryGetValue(stateId, out state);
+            }
+            var status = Text(item, "state_name", "status_name", "status") ??
+                         state?.Name ?? stateId ?? "未设置";
+            var stateGroup = Text(item, "state_group", "group") ??
+                             state?.Group ?? string.Empty;
+            predecessors.Add(new IssuePredecessor(id, key,
+                Text(item, "name", "title") ?? "未命名任务", status,
+                IsCompletedState(stateGroup, status)));
+        }
+
+        return predecessors;
     }
 
     internal static Uri BuildIssuePageUri(
