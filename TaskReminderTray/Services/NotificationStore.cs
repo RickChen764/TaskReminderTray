@@ -12,8 +12,11 @@ internal sealed record PersistentNotification(
     string PreviousStatus,
     string CurrentStatus,
     DateTimeOffset ChangedAt,
-    string SourceUrl)
+    string SourceUrl,
+    DateTimeOffset? ReadAt = null)
 {
+    public bool IsRead => ReadAt is not null;
+
     public static PersistentNotification FromChange(IssueChange change)
     {
         var identity = string.Join("\n", change.IssueId, change.PreviousStatus,
@@ -27,6 +30,7 @@ internal sealed record PersistentNotification(
 
 internal sealed class NotificationStore
 {
+    private const int MaximumHistoryCount = 200;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public NotificationStore(string? notificationPath = null)
@@ -40,6 +44,17 @@ internal sealed class NotificationStore
     public string NotificationPath { get; }
 
     public IReadOnlyList<PersistentNotification> LoadPending()
+        => LoadStored()
+            .Where(notification => !notification.IsRead)
+            .OrderBy(notification => notification.ChangedAt)
+            .ToArray();
+
+    public IReadOnlyList<PersistentNotification> LoadHistory()
+        => LoadStored()
+            .OrderByDescending(notification => notification.ChangedAt)
+            .ToArray();
+
+    private IReadOnlyList<PersistentNotification> LoadStored()
     {
         if (!File.Exists(NotificationPath))
         {
@@ -50,7 +65,6 @@ internal sealed class NotificationStore
         {
             return (JsonSerializer.Deserialize<List<PersistentNotification>>(
                         File.ReadAllText(NotificationPath), JsonOptions) ?? [])
-                .OrderBy(notification => notification.ChangedAt)
                 .ToArray();
         }
         catch
@@ -61,29 +75,53 @@ internal sealed class NotificationStore
 
     public IReadOnlyList<PersistentNotification> AddChanges(IEnumerable<IssueChange> changes)
     {
-        var pending = LoadPending().ToList();
-        var knownIds = pending.Select(notification => notification.Id)
+        var history = LoadStored().ToList();
+        var knownIds = history.Select(notification => notification.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var notification in changes.Select(PersistentNotification.FromChange))
         {
             if (knownIds.Add(notification.Id))
             {
-                pending.Add(notification);
+                history.Add(notification);
             }
         }
 
-        Save(pending);
-        return pending.OrderBy(notification => notification.ChangedAt).ToArray();
+        history = history
+            .OrderByDescending(notification => notification.ChangedAt)
+            .Take(MaximumHistoryCount)
+            .ToList();
+        Save(history);
+        return history
+            .Where(notification => !notification.IsRead)
+            .OrderBy(notification => notification.ChangedAt)
+            .ToArray();
     }
 
     public IReadOnlyList<PersistentNotification> Acknowledge(string notificationId)
     {
-        var pending = LoadPending()
-            .Where(notification => !string.Equals(notification.Id, notificationId,
-                StringComparison.OrdinalIgnoreCase))
+        var history = LoadStored()
+            .Select(notification => string.Equals(notification.Id, notificationId,
+                    StringComparison.OrdinalIgnoreCase) && !notification.IsRead
+                ? notification with { ReadAt = DateTimeOffset.Now }
+                : notification)
             .ToArray();
-        Save(pending);
-        return pending;
+        Save(history);
+        return history
+            .Where(notification => !notification.IsRead)
+            .OrderBy(notification => notification.ChangedAt)
+            .ToArray();
+    }
+
+    public IReadOnlyList<PersistentNotification> AcknowledgeAll()
+    {
+        var readAt = DateTimeOffset.Now;
+        var history = LoadStored()
+            .Select(notification => notification.IsRead
+                ? notification
+                : notification with { ReadAt = readAt })
+            .ToArray();
+        Save(history);
+        return [];
     }
 
     private void Save(IReadOnlyCollection<PersistentNotification> notifications)

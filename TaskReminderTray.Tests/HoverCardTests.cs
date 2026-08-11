@@ -1,4 +1,5 @@
 using System.Drawing;
+using TaskReminderTray;
 using TaskReminderTray.Models;
 using UsageTray;
 using Xunit;
@@ -63,6 +64,8 @@ public sealed class HoverCardTests
         Assert.True(map.WeekNavigation[0].Bounds.Right <= map.WeekNavigation[1].Bounds.Left);
         Assert.True(map.WeekNavigation[1].Bounds.Right <= map.WeekNavigation[2].Bounds.Left);
         Assert.All(map.WeekNavigation, item => Assert.True(item.Bounds.Bottom < 50));
+        Assert.False(map.NotificationCenterBounds.IsEmpty);
+        Assert.True(map.NotificationCenterBounds.Bottom < 50);
     }
 
     [Theory]
@@ -162,6 +165,17 @@ public sealed class HoverCardTests
 
         Assert.Equal(expectedWidth, size.Width);
         Assert.Equal(expectedHeight, size.Height);
+    }
+
+    [Theory]
+    [InlineData(96, 640, 560)]
+    [InlineData(144, 960, 840)]
+    [InlineData(192, 1280, 1120)]
+    public void NotificationCenter_DpiScalingKeepsLogicalSizeStable(
+        int dpi, int expectedWidth, int expectedHeight)
+    {
+        Assert.Equal(new Size(expectedWidth, expectedHeight),
+            NotificationCenterForm.LogicalSizeForDpi(dpi));
     }
 
     [Fact]

@@ -21,6 +21,7 @@ internal sealed class ScheduleDetailsForm : Form
 
     public event Action<IssueItem?>? FocusChanged;
     public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
+    public event Action? NotificationCenterRequested;
 
     public ScheduleDetailsForm()
     {
@@ -38,6 +39,7 @@ internal sealed class ScheduleDetailsForm : Form
         _surface.FocusChanged += issue => FocusChanged?.Invoke(issue);
         _surface.SnoozeRequested += (issue, remindAt) =>
             SnoozeRequested?.Invoke(issue, remindAt);
+        _surface.NotificationCenterRequested += () => NotificationCenterRequested?.Invoke();
         _surface.MenuOpening += () => _allowDeactivateClose = false;
         _surface.MenuClosed += () =>
         {
@@ -192,6 +194,7 @@ internal sealed class ScheduleDetailsForm : Form
         public event Action? LayoutChanged;
         public event Action<IssueItem?>? FocusChanged;
         public event Action<IssueItem, DateTimeOffset>? SnoozeRequested;
+        public event Action? NotificationCenterRequested;
         public event Action? MenuOpening;
         public event Action? MenuClosed;
 
@@ -209,7 +212,11 @@ internal sealed class ScheduleDetailsForm : Form
             };
             BuildIssueMenu();
             MouseMove += DetailsSurface_MouseMove;
-            MouseLeave += (_, _) => SetHoveredWeekNavigation(null);
+            MouseLeave += (_, _) =>
+            {
+                SetHoveredWeekNavigation(null);
+                SetNotificationCenterHovered(false);
+            };
             MouseUp += DetailsSurface_MouseUp;
         }
 
@@ -249,10 +256,24 @@ internal sealed class ScheduleDetailsForm : Form
             var weekNavigation = _interactions.WeekNavigation.LastOrDefault(item =>
                 item.Bounds.Contains(e.Location));
             SetHoveredWeekNavigation(weekNavigation?.Navigation);
+            SetNotificationCenterHovered(
+                _interactions.NotificationCenterBounds.Contains(e.Location));
             Cursor = _interactions.Expanders.Any(expander => expander.Bounds.Contains(e.Location)) ||
-                     weekNavigation is not null
+                     weekNavigation is not null ||
+                     _interactions.NotificationCenterBounds.Contains(e.Location)
                 ? Cursors.Hand
                 : Cursors.Default;
+        }
+
+        private void SetNotificationCenterHovered(bool hovered)
+        {
+            if (_content is null || _content.NotificationCenterHovered == hovered)
+            {
+                return;
+            }
+
+            _content.NotificationCenterHovered = hovered;
+            Invalidate(_interactions.NotificationCenterBounds);
         }
 
         private void SetHoveredWeekNavigation(ScheduleWeekNavigation? navigation)
@@ -279,6 +300,12 @@ internal sealed class ScheduleDetailsForm : Form
 
             if (e.Button != MouseButtons.Left)
             {
+                return;
+            }
+
+            if (_interactions.NotificationCenterBounds.Contains(e.Location))
+            {
+                NotificationCenterRequested?.Invoke();
                 return;
             }
 

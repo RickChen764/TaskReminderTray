@@ -16,6 +16,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly PersonalWorkStore _personalWorkStore = new();
     private readonly ReminderEvaluator _reminderEvaluator = new();
     private readonly PersistentNotificationForm _notificationForm = new();
+    private readonly NotificationCenterForm _notificationCenterForm = new();
     private readonly ScheduleDetailsForm _detailsForm = new();
     private readonly SnoozedReminderForm _snoozedReminderForm = new();
     private readonly NotifyIcon _notifyIcon;
@@ -33,6 +34,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _dueItem = new("临期：--") { Enabled = false };
     private readonly ToolStripMenuItem _updatedItem = new("最后更新：--") { Enabled = false };
     private readonly ToolStripMenuItem _refreshItem = new("立即刷新");
+    private readonly ToolStripMenuItem _notificationCenterItem = new("通知中心");
     private readonly ToolStripMenuItem _doNotDisturbMenu = new("免打扰");
     private readonly ToolStripMenuItem _doNotDisturbStatusItem = new("当前：未开启")
     {
@@ -53,6 +55,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _installingUpdate;
     private bool _lastDoNotDisturbActive;
     private string? _lastError;
+    private string? _baseToolbarDisplay;
+    private Color _lastToolbarColor = Color.FromArgb(124, 132, 145);
     private IReadOnlyList<IssueItem> _lastIssues = [];
     private IReadOnlyList<PersistentNotification> _pendingNotifications = [];
     private UpdateRelease? _availableUpdate;
@@ -70,6 +74,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add(_updatedItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_refreshItem);
+        _menu.Items.Add(_notificationCenterItem);
         _menu.Items.Add("打开任务页面", null, (_, _) => OpenSourcePage());
         _menu.Items.Add("设置…", null, (_, _) => ShowSettings());
         _doNotDisturbMenu.DropDownItems.Add(_doNotDisturbStatusItem);
@@ -84,6 +89,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _menu.Items.Add("退出", null, (_, _) => ExitThread());
         _dismissController = new ContextMenuDismissController(_menu);
         _refreshItem.Click += async (_, _) => await RefreshAsync();
+        _notificationCenterItem.Click += (_, _) => ShowNotificationCenter();
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _updateItem.Click += async (_, _) => await UpdateMenuItem_ClickAsync();
         _manualDoNotDisturbItem.Click += (_, _) => ToggleManualDoNotDisturb();
@@ -105,8 +111,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _toolbar.AttachmentChanged += (_, attached) => _notifyIcon.Visible = !attached;
         _notificationForm.AcknowledgeRequested += (_, notificationId) =>
             AcknowledgeNotification(notificationId);
+        _notificationCenterForm.AcknowledgeRequested += (_, notificationId) =>
+            AcknowledgeNotification(notificationId);
+        _notificationCenterForm.AcknowledgeAllRequested += (_, _) =>
+            AcknowledgeAllNotifications();
         _detailsForm.FocusChanged += SetFocusIssue;
         _detailsForm.SnoozeRequested += AddSnoozedReminder;
+        _detailsForm.NotificationCenterRequested += ShowNotificationCenter;
         _snoozedReminderForm.AcknowledgeRequested += AcknowledgeSnoozedReminder;
         _snoozedReminderForm.RescheduleRequested += RescheduleSnoozedReminder;
         _personalReminderTimer.Tick += (_, _) =>
@@ -142,14 +153,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowBalloon("配置读取失败", warning, ToolTipIcon.Warning);
         }
 
+        _pendingNotifications = _notificationStore.LoadPending();
+        UpdateNotificationSurfaces();
+        ShowPendingNotification();
+        ShowDuePersonalReminder();
         if (_settings.IsConfigured)
         {
             _ = RefreshAsync();
         }
-
-        _pendingNotifications = _notificationStore.LoadPending();
-        ShowPendingNotification();
-        ShowDuePersonalReminder();
     }
 
     private async Task RefreshAsync()
@@ -164,9 +175,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var issues = await _client.GetIssuesAsync(_settings);
-            ApplyIssues(issues);
-            NotifyChanges(issues);
             _lastIssues = issues;
+            NotifyChanges(issues);
+            ApplyIssues(issues);
             _lastError = null;
         }
         catch (Exception exception)
@@ -210,6 +221,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             display += $" · 逾{developmentOverdue}";
         }
+        _baseToolbarDisplay = display;
+        _lastToolbarColor = color;
 
         var expandedDates = _detailsContent?.ExpandedDates.ToArray() ?? [];
         var weekOffset = _detailsContent?.WeekOffset ?? 0;
@@ -217,6 +230,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _detailsContent.ExpandedDates.UnionWith(expandedDates);
         _detailsContent.FocusIssueId = _personalWorkState.FocusIssueId;
         _detailsContent.WeekOffset = weekOffset;
+        _detailsContent.UnreadNotificationCount = _pendingNotifications.Count;
+        display = WithUnreadCount(display);
         _toolbar.SetDisplay(display, _detailsContent, color);
         _detailsForm.SetContent(_detailsContent);
         SetTooltip($"TaskReminderTray - {display}");
@@ -232,6 +247,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (changes.Count > 0)
         {
             _pendingNotifications = _notificationStore.AddChanges(changes);
+            UpdateNotificationSurfaces(refreshSchedule: false);
             ShowPendingNotification();
         }
 
@@ -341,6 +357,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             _pendingNotifications = _notificationStore.Acknowledge(notificationId);
+            UpdateNotificationSurfaces();
             ShowPendingNotification();
         }
         catch (Exception exception)
@@ -349,6 +366,51 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+
+    private void AcknowledgeAllNotifications()
+    {
+        try
+        {
+            _pendingNotifications = _notificationStore.AcknowledgeAll();
+            UpdateNotificationSurfaces();
+            ShowPendingNotification();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show($"无法将通知全部标为已读：{exception.Message}", "任务提醒",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowNotificationCenter()
+    {
+        _detailsForm.Hide();
+        _notificationCenterForm.ShowCenter(_notificationStore.LoadHistory(),
+            _toolbar.GetScreenBounds());
+    }
+
+    private void UpdateNotificationSurfaces(bool refreshSchedule = true)
+    {
+        _notificationCenterItem.Text = _pendingNotifications.Count > 0
+            ? $"通知中心（未读 {_pendingNotifications.Count}）"
+            : "通知中心";
+        _notificationCenterForm.SetNotifications(_notificationStore.LoadHistory());
+        if (refreshSchedule && _detailsContent is not null)
+        {
+            _detailsContent.UnreadNotificationCount = _pendingNotifications.Count;
+            _detailsForm.SetContent(_detailsContent);
+            if (!string.IsNullOrWhiteSpace(_baseToolbarDisplay))
+            {
+                var display = WithUnreadCount(_baseToolbarDisplay);
+                _toolbar.SetDisplay(display, _detailsContent, _lastToolbarColor);
+                SetTooltip($"TaskReminderTray - {display}");
+            }
+        }
+    }
+
+    private string WithUnreadCount(string display) => _pendingNotifications.Count > 0
+        ? $"{display} · 未读 {_pendingNotifications.Count}"
+        : display;
 
     private void ShowPendingNotification()
     {
@@ -683,6 +745,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dismissController.Dispose();
         _notificationForm.Shutdown();
         _notificationForm.Dispose();
+        _notificationCenterForm.Shutdown();
+        _notificationCenterForm.Dispose();
         _detailsForm.Shutdown();
         _detailsForm.Dispose();
         _snoozedReminderForm.Shutdown();

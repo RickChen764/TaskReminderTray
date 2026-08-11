@@ -319,6 +319,45 @@ public sealed class PlaneIssueClientTests
             var remaining = store.Acknowledge(reloaded[0].Id);
             Assert.Empty(remaining);
             Assert.Empty(store.LoadPending());
+            var history = store.LoadHistory();
+            Assert.Single(history);
+            Assert.True(history[0].IsRead);
+            Assert.NotNull(history[0].ReadAt);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void NotificationStore_AcknowledgeAllKeepsReadableHistory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"task-reminder-notifications-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "notifications.json");
+        try
+        {
+            var store = new NotificationStore(path);
+            var changedAt = DateTimeOffset.Parse("2026-08-04T09:30:00+08:00");
+            store.AddChanges([
+                new IssueChange("1", "SJ-1", "第一个任务", "待开发", "开发中",
+                    changedAt, "https://plane.example.com/issues/1"),
+                new IssueChange("2", "SJ-2", "第二个任务", "开发中", "待测试",
+                    changedAt.AddMinutes(10), "https://plane.example.com/issues/2")
+            ]);
+
+            var pending = store.AcknowledgeAll();
+            var history = store.LoadHistory();
+
+            Assert.Empty(pending);
+            Assert.Empty(store.LoadPending());
+            Assert.Equal(2, history.Count);
+            Assert.All(history, notification => Assert.True(notification.IsRead));
+            Assert.True(history[0].ChangedAt > history[1].ChangedAt);
         }
         finally
         {

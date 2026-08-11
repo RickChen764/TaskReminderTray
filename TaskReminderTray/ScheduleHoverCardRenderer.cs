@@ -19,6 +19,8 @@ internal sealed class HoverCardContent
     public string? FocusIssueId { get; set; }
     public int WeekOffset { get; set; }
     public ScheduleWeekNavigation? HoveredWeekNavigation { get; set; }
+    public int UnreadNotificationCount { get; set; }
+    public bool NotificationCenterHovered { get; set; }
 
     public DateOnly DisplayedWeekStart =>
         ScheduleSummary.StartOfWeek(Today).AddDays(WeekOffset * 7);
@@ -137,12 +139,14 @@ internal sealed class ScheduleInteractionMap
     public List<ScheduleIssueRegion> Issues { get; } = [];
     public List<ScheduleExpandRegion> Expanders { get; } = [];
     public List<ScheduleWeekNavigationRegion> WeekNavigation { get; } = [];
+    public Rectangle NotificationCenterBounds { get; set; }
 
     public void Clear()
     {
         Issues.Clear();
         Expanders.Clear();
         WeekNavigation.Clear();
+        NotificationCenterBounds = Rectangle.Empty;
         FocusIssue = null;
     }
 
@@ -386,6 +390,15 @@ internal static class UsageHoverCardRenderer
         graphics.DrawString($"{content.UpdatedAt:HH:mm} 更新", smallFont, mutedBrush,
             new RectangleF(x + width - dateWidth, y + Scale(20, dpi), dateWidth,
                 Scale(16, dpi)), right);
+        var notificationBounds = new Rectangle(
+            x + width - dateWidth - Scale(94, dpi), y,
+            Scale(80, dpi), Scale(32, dpi));
+        DrawNotificationCenterButton(graphics, notificationBounds, dpi, content,
+            smallFont);
+        if (interactions is not null)
+        {
+            interactions.NotificationCenterBounds = notificationBounds;
+        }
         DrawWeekNavigationControl(graphics, navigationBounds, previousBounds,
             currentBounds, nextBounds, dpi, content);
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
@@ -394,6 +407,41 @@ internal static class UsageHoverCardRenderer
             currentBounds, ScheduleWeekNavigation.Current));
         interactions?.WeekNavigation.Add(new ScheduleWeekNavigationRegion(
             nextBounds, ScheduleWeekNavigation.Next));
+    }
+
+    private static void DrawNotificationCenterButton(
+        Graphics graphics,
+        Rectangle bounds,
+        int dpi,
+        HoverCardContent content,
+        Font font)
+    {
+        var fill = content.NotificationCenterHovered
+            ? Color.FromArgb(42, 48, 58)
+            : Color.FromArgb(28, 32, 39);
+        FillRoundedRectangle(graphics, bounds, Scale(6, dpi), fill);
+        using var path = RoundedRectangle(bounds, Scale(6, dpi));
+        using var pen = new Pen(content.NotificationCenterHovered
+            ? Color.FromArgb(79, 91, 110)
+            : Border, ScaleF(1, dpi));
+        graphics.DrawPath(pen, path);
+
+        var unread = Math.Min(99, Math.Max(0, content.UnreadNotificationCount));
+        var text = unread > 0 ? $"通知  {unread}" : "通知";
+        using var brush = new SolidBrush(unread > 0 ? PrimaryText : SecondaryText);
+        using var centered = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        graphics.DrawString(text, font, brush, bounds, centered);
+        if (unread > 0)
+        {
+            using var dot = new SolidBrush(Orange);
+            graphics.FillEllipse(dot, bounds.Right - Scale(10, dpi),
+                bounds.Top + Scale(5, dpi), Scale(5, dpi), Scale(5, dpi));
+        }
     }
 
     private static void DrawSectionLabel(Graphics graphics, string text, int x, int y,
