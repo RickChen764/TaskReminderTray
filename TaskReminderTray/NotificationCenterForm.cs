@@ -17,6 +17,8 @@ internal sealed class NotificationCenterForm : Form
 
     private readonly Label _summaryLabel = new();
     private readonly Button _acknowledgeAllButton = new();
+    private readonly Button _closeButton = new();
+    private readonly FlowLayoutPanel _headingStack = new();
     private readonly FlowLayoutPanel _list = new();
     private readonly Label _emptyLabel = new();
     private IReadOnlyList<PersistentNotification> _notifications = [];
@@ -71,6 +73,7 @@ internal sealed class NotificationCenterForm : Form
                 ? $"全部已读 · 最近 {notifications.Count} 条变化"
                 : "工单状态变化会保存在这里";
         _acknowledgeAllButton.Enabled = unreadCount > 0;
+        _acknowledgeAllButton.Visible = unreadCount > 0;
         RebuildList();
     }
 
@@ -110,25 +113,37 @@ internal sealed class NotificationCenterForm : Form
             ForeColor = PrimaryText,
             Font = new Font(Font.FontFamily, 15F, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(22, 17)
+            Margin = new Padding(0)
         };
         _summaryLabel.ForeColor = MutedText;
         _summaryLabel.AutoSize = true;
-        _summaryLabel.Location = new Point(24, 51);
+        _summaryLabel.Margin = new Padding(1, 2, 0, 0);
 
-        _acknowledgeAllButton.Text = "全部已读";
-        StyleButton(_acknowledgeAllButton, secondary: true);
+        // 让布局系统按当前 DPI 下的真实字体高度排列两行文字，避免固定 Y 坐标
+        // 在 125%/150% 缩放下造成标题裁切或副标题覆盖。
+        _headingStack.FlowDirection = FlowDirection.TopDown;
+        _headingStack.WrapContents = false;
+        _headingStack.AutoSize = false;
+        _headingStack.BackColor = Background;
+        _headingStack.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _headingStack.SetBounds(22, 12, ClientSize.Width - 250, 66);
+        _headingStack.Controls.AddRange([heading, _summaryLabel]);
+
+        _acknowledgeAllButton.Text = "全部标为已读";
+        StyleButton(_acknowledgeAllButton, secondary: false);
         _acknowledgeAllButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _acknowledgeAllButton.SetBounds(ClientSize.Width - 154, 21, 92, 34);
+        _acknowledgeAllButton.SetBounds(ClientSize.Width - 224, 20, 128, 36);
         _acknowledgeAllButton.Click += (_, _) => AcknowledgeAllRequested?.Invoke(this,
             EventArgs.Empty);
 
-        var closeButton = new Button { Text = "×" };
-        StyleButton(closeButton, secondary: true);
-        closeButton.Font = new Font("Segoe UI", 13F);
-        closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        closeButton.SetBounds(ClientSize.Width - 52, 21, 30, 34);
-        closeButton.Click += (_, _) => Hide();
+        _closeButton.Text = "关闭";
+        StyleButton(_closeButton, secondary: true);
+        _closeButton.ForeColor = PrimaryText;
+        _closeButton.TextAlign = ContentAlignment.MiddleCenter;
+        _closeButton.Padding = Padding.Empty;
+        _closeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _closeButton.SetBounds(ClientSize.Width - 86, 20, 64, 36);
+        _closeButton.Click += (_, _) => Hide();
 
         var separator = new Panel
         {
@@ -156,8 +171,8 @@ internal sealed class NotificationCenterForm : Form
         _emptyLabel.SetBounds(22, 99, ClientSize.Width - 44, ClientSize.Height - 121);
         _emptyLabel.Visible = false;
 
-        Controls.AddRange([heading, _summaryLabel, _acknowledgeAllButton,
-            closeButton, separator, _list, _emptyLabel]);
+        Controls.AddRange([_headingStack, _acknowledgeAllButton,
+            _closeButton, separator, _list, _emptyLabel]);
     }
 
     private void RebuildList()
@@ -170,7 +185,9 @@ internal sealed class NotificationCenterForm : Form
                 control.Dispose();
             }
             _list.Controls.Clear();
-            _emptyLabel.Visible = _notifications.Count == 0;
+            var isEmpty = _notifications.Count == 0;
+            _list.Visible = !isEmpty;
+            _emptyLabel.Visible = isEmpty;
             _emptyLabel.BringToFront();
             foreach (var notification in _notifications)
             {
