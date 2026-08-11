@@ -223,7 +223,7 @@ internal sealed class NotificationCenterForm : Form
 
         var status = new Label
         {
-            Text = $"{notification.PreviousStatus}  →  {notification.CurrentStatus}",
+            Text = NotificationDescription(notification),
             ForeColor = notification.IsRead ? MutedText : Color.FromArgb(199, 216, 239),
             Font = new Font(Font.FontFamily, 9F, FontStyle.Bold),
             AutoSize = false,
@@ -260,6 +260,11 @@ internal sealed class NotificationCenterForm : Form
         LayoutNotificationRow(row, status, open, acknowledge);
         return row;
     }
+
+    internal static string NotificationDescription(PersistentNotification notification) =>
+        notification.Kind == NotificationKind.DueToday
+            ? $"今天到期  ·  {notification.CurrentStatus}"
+            : $"{notification.PreviousStatus}  →  {notification.CurrentStatus}";
 
     private static void LayoutNotificationRow(
         Control row,

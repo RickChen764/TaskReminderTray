@@ -369,6 +369,53 @@ public sealed class PlaneIssueClientTests
     }
 
     [Fact]
+    public void NotificationStore_DueTodayRemindsOncePerIssuePerDay()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"task-reminder-due-today-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "notifications.json");
+        try
+        {
+            var store = new NotificationStore(path);
+            var today = new DateOnly(2026, 8, 11);
+            var dueToday = Issue("due-today", IssueKind.Task, today) with
+            {
+                Key = "SJ-901",
+                Title = "今天到期的功能开发",
+                Status = "开发中",
+                DueDate = today,
+                SourceUrl = "https://plane.example.com/issues/due-today"
+            };
+            var later = Issue("later", IssueKind.Bug, today.AddDays(1)) with
+            {
+                DueDate = today.AddDays(1)
+            };
+            var detectedAt = DateTimeOffset.Parse("2026-08-11T09:00:00+08:00");
+
+            var first = store.AddDueToday([dueToday, later], today, detectedAt);
+            var duplicate = store.AddDueToday([dueToday], today, detectedAt.AddHours(1));
+
+            var notification = Assert.Single(first);
+            Assert.Single(duplicate);
+            Assert.Equal(NotificationKind.DueToday, notification.Kind);
+            Assert.Equal("SJ-901", notification.IssueKey);
+            Assert.Equal("今天到期  ·  开发中",
+                NotificationCenterForm.NotificationDescription(notification));
+
+            store.Acknowledge(notification.Id);
+            Assert.Empty(store.AddDueToday([dueToday], today, detectedAt.AddHours(2)));
+            Assert.Single(store.LoadHistory());
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void NotificationStore_KeepsSequentialChangesForTheSameIssue()
     {
         var directory = Path.Combine(Path.GetTempPath(),

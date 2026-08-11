@@ -12,6 +12,7 @@ internal sealed class PersistentNotificationForm : Form
     private static readonly Color SecondaryText = Color.FromArgb(151, 159, 173);
     private static readonly Color Accent = Color.FromArgb(80, 145, 232);
 
+    private readonly Label _headingLabel = new();
     private readonly Label _pendingLabel = new();
     private readonly LinkLabel _issueLink = new();
     private readonly Label _titleLabel = new();
@@ -58,8 +59,20 @@ internal sealed class PersistentNotificationForm : Form
             _issueLink.Links.Add(0, notification.IssueKey.Length, notification.SourceUrl);
         }
         _titleLabel.Text = notification.Title;
-        _statusLabel.Text = $"{notification.PreviousStatus}  →  {notification.CurrentStatus}";
-        _timeLabel.Text = $"变更于 {notification.ChangedAt.ToLocalTime():MM-dd HH:mm}";
+        if (notification.Kind == NotificationKind.DueToday)
+        {
+            Text = "工单到期提醒";
+            _headingLabel.Text = "工单今天到期";
+            _statusLabel.Text = $"今天到期  ·  {notification.CurrentStatus}";
+            _timeLabel.Text = $"检测于 {notification.ChangedAt.ToLocalTime():MM-dd HH:mm}";
+        }
+        else
+        {
+            Text = "任务状态变化";
+            _headingLabel.Text = "状态已更新";
+            _statusLabel.Text = $"{notification.PreviousStatus}  →  {notification.CurrentStatus}";
+            _timeLabel.Text = $"变更于 {notification.ChangedAt.ToLocalTime():MM-dd HH:mm}";
+        }
         PositionAtBottomRight();
         if (!Visible)
         {
@@ -107,14 +120,11 @@ internal sealed class PersistentNotificationForm : Form
 
     private void BuildInterface()
     {
-        var heading = new Label
-        {
-            Text = "状态已更新",
-            ForeColor = PrimaryText,
-            Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
-            AutoSize = true,
-            Location = new Point(20, 17)
-        };
+        _headingLabel.Text = "状态已更新";
+        _headingLabel.ForeColor = PrimaryText;
+        _headingLabel.Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold);
+        _headingLabel.AutoSize = true;
+        _headingLabel.Location = new Point(20, 17);
         _pendingLabel.ForeColor = SecondaryText;
         _pendingLabel.AutoSize = false;
         _pendingLabel.TextAlign = ContentAlignment.MiddleRight;
@@ -175,7 +185,7 @@ internal sealed class PersistentNotificationForm : Form
         _acknowledgeButton.SetBounds(284, 175, 96, 34);
         _acknowledgeButton.Click += (_, _) => RequestAcknowledge();
 
-        Controls.AddRange([heading, _pendingLabel, closeButton, separator,
+        Controls.AddRange([_headingLabel, _pendingLabel, closeButton, separator,
             _issueLink, _titleLabel, _statusLabel, _timeLabel, _acknowledgeButton]);
     }
 

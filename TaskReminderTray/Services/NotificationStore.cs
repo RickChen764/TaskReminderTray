@@ -1,8 +1,15 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using TaskReminderTray.Models;
 
 namespace TaskReminderTray.Services;
+
+internal enum NotificationKind
+{
+    StatusChange,
+    DueToday
+}
 
 internal sealed record PersistentNotification(
     string Id,
@@ -13,7 +20,8 @@ internal sealed record PersistentNotification(
     string CurrentStatus,
     DateTimeOffset ChangedAt,
     string SourceUrl,
-    DateTimeOffset? ReadAt = null)
+    DateTimeOffset? ReadAt = null,
+    NotificationKind Kind = NotificationKind.StatusChange)
 {
     public bool IsRead => ReadAt is not null;
 
@@ -25,6 +33,16 @@ internal sealed record PersistentNotification(
         return new PersistentNotification(id, change.IssueId, change.IssueKey,
             change.Title, change.PreviousStatus, change.CurrentStatus,
             change.ChangedAt, change.SourceUrl);
+    }
+
+    public static PersistentNotification DueToday(IssueItem issue, DateOnly today,
+        DateTimeOffset detectedAt)
+    {
+        var identity = string.Join("\n", issue.Id, "due-today", today.ToString("yyyy-MM-dd"));
+        var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+        return new PersistentNotification(id, issue.Id, issue.Key, issue.Title,
+            issue.Status, issue.Status, detectedAt, issue.SourceUrl, null,
+            NotificationKind.DueToday);
     }
 }
 
@@ -44,10 +62,7 @@ internal sealed class NotificationStore
     public string NotificationPath { get; }
 
     public IReadOnlyList<PersistentNotification> LoadPending()
-        => LoadStored()
-            .Where(notification => !notification.IsRead)
-            .OrderBy(notification => notification.ChangedAt)
-            .ToArray();
+        => SortPending(LoadStored());
 
     public IReadOnlyList<PersistentNotification> LoadHistory()
         => LoadStored()
@@ -74,11 +89,22 @@ internal sealed class NotificationStore
     }
 
     public IReadOnlyList<PersistentNotification> AddChanges(IEnumerable<IssueChange> changes)
+        => AddNotifications(changes.Select(PersistentNotification.FromChange));
+
+    public IReadOnlyList<PersistentNotification> AddDueToday(
+        IEnumerable<IssueItem> issues,
+        DateOnly today,
+        DateTimeOffset detectedAt) => AddNotifications(issues
+        .Where(issue => !issue.IsCompleted && issue.DueDate == today)
+        .Select(issue => PersistentNotification.DueToday(issue, today, detectedAt)));
+
+    private IReadOnlyList<PersistentNotification> AddNotifications(
+        IEnumerable<PersistentNotification> notifications)
     {
         var history = LoadStored().ToList();
         var knownIds = history.Select(notification => notification.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var notification in changes.Select(PersistentNotification.FromChange))
+        foreach (var notification in notifications)
         {
             if (knownIds.Add(notification.Id))
             {
@@ -91,10 +117,7 @@ internal sealed class NotificationStore
             .Take(MaximumHistoryCount)
             .ToList();
         Save(history);
-        return history
-            .Where(notification => !notification.IsRead)
-            .OrderBy(notification => notification.ChangedAt)
-            .ToArray();
+        return SortPending(history);
     }
 
     public IReadOnlyList<PersistentNotification> Acknowledge(string notificationId)
@@ -106,10 +129,7 @@ internal sealed class NotificationStore
                 : notification)
             .ToArray();
         Save(history);
-        return history
-            .Where(notification => !notification.IsRead)
-            .OrderBy(notification => notification.ChangedAt)
-            .ToArray();
+        return SortPending(history);
     }
 
     public IReadOnlyList<PersistentNotification> AcknowledgeAll()
@@ -123,6 +143,13 @@ internal sealed class NotificationStore
         Save(history);
         return [];
     }
+
+    private static PersistentNotification[] SortPending(
+        IEnumerable<PersistentNotification> notifications) => notifications
+        .Where(notification => !notification.IsRead)
+        .OrderBy(notification => notification.Kind == NotificationKind.DueToday ? 0 : 1)
+        .ThenBy(notification => notification.ChangedAt)
+        .ToArray();
 
     private void Save(IReadOnlyCollection<PersistentNotification> notifications)
     {

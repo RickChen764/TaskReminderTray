@@ -244,16 +244,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void NotifyChanges(IReadOnlyList<IssueItem> issues)
     {
         var changes = _snapshotStore.CompareAndSave(issues);
+        var previousPendingIds = _pendingNotifications
+            .Select(notification => notification.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (changes.Count > 0)
         {
             _pendingNotifications = _notificationStore.AddChanges(changes);
+        }
+
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        _pendingNotifications = _notificationStore.AddDueToday(
+            issues, today, DateTimeOffset.Now);
+        if (!previousPendingIds.SetEquals(
+                _pendingNotifications.Select(notification => notification.Id)))
+        {
             UpdateNotificationSurfaces(refreshSchedule: false);
             ShowPendingNotification();
         }
 
         var due = _reminderEvaluator.GetDueReminders(issues,
-            DateOnly.FromDateTime(DateTime.Now), _settings.DueSoonDays);
-        if (due.Count > 0)
+                today, _settings.DueSoonDays)
+            // 今天到期由可手动确认的持久提醒负责，避免同一次刷新再弹一个
+            // 内容重复且不可追溯的系统气泡。
+            .Where(issue => issue.DueDate != today)
+            .ToArray();
+        if (due.Length > 0)
         {
             var first = due.OrderBy(issue => issue.DueDate).First();
             var dateText = first.DueDate < DateOnly.FromDateTime(DateTime.Now)
@@ -261,7 +276,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 : first.DueDate == DateOnly.FromDateTime(DateTime.Now)
                     ? "今天到期"
                     : $"{first.DueDate:MM-dd} 到期";
-            var extra = due.Count > 1 ? $"，另有 {due.Count - 1} 项" : string.Empty;
+            var extra = due.Length > 1 ? $"，另有 {due.Length - 1} 项" : string.Empty;
             ShowBalloon("任务到期提醒", $"{first.Key} {first.Title}\n{dateText}{extra}",
                 ToolTipIcon.Warning);
         }
