@@ -267,7 +267,6 @@ internal static class UsageHoverCardRenderer
         var weekStart = content.DisplayedWeekStart;
         var weekEnd = weekStart.AddDays(6);
 
-        using var headingFont = Font(18F, FontStyle.Bold, dpi);
         using var sectionFont = Font(13F, FontStyle.Regular, dpi);
         using var dayFont = Font(11F, FontStyle.Bold, dpi);
         using var dateFont = Font(10F, FontStyle.Regular, dpi);
@@ -281,8 +280,7 @@ internal static class UsageHoverCardRenderer
         using var mutedBrush = new SolidBrush(MutedText);
 
         DrawHeader(graphics, x, width, y, dpi, content, weekStart, weekEnd,
-            headingFont, taskFont, smallFont, primaryBrush, secondaryBrush, mutedBrush,
-            interactions);
+            taskFont, smallFont, secondaryBrush, mutedBrush, interactions);
         y += Scale(52, dpi);
 
         var focus = content.FocusIssue;
@@ -365,13 +363,12 @@ internal static class UsageHoverCardRenderer
 
     private static void DrawHeader(Graphics graphics, int x, int width, int y, int dpi,
         HoverCardContent content, DateOnly weekStart, DateOnly weekEnd,
-        Font headingFont, Font taskFont, Font smallFont, Brush primaryBrush,
-        Brush secondaryBrush, Brush mutedBrush, ScheduleInteractionMap? interactions)
+        Font taskFont, Font smallFont, Brush secondaryBrush, Brush mutedBrush,
+        ScheduleInteractionMap? interactions)
     {
         var dateWidth = Scale(116, dpi);
         var navigationWidth = Scale(152, dpi);
-        var navigationBounds = new Rectangle(x + (width - navigationWidth) / 2 -
-                                              Scale(12, dpi),
+        var navigationBounds = new Rectangle(x,
             y, navigationWidth, Scale(32, dpi));
         var previousBounds = new Rectangle(navigationBounds.Left, navigationBounds.Top,
             Scale(40, dpi), navigationBounds.Height);
@@ -379,9 +376,6 @@ internal static class UsageHoverCardRenderer
             Scale(72, dpi), navigationBounds.Height);
         var nextBounds = new Rectangle(currentBounds.Right, navigationBounds.Top,
             Scale(40, dpi), navigationBounds.Height);
-        graphics.DrawString("开发安排", headingFont, primaryBrush,
-            new RectangleF(x, y + Scale(2, dpi),
-                navigationBounds.Left - x - Scale(18, dpi), Scale(29, dpi)));
         using var right = new StringFormat { Alignment = StringAlignment.Far };
         graphics.DrawString($"{weekStart:M/d} – {weekEnd:M/d}", taskFont, secondaryBrush,
             new RectangleF(x + width - dateWidth, y, dateWidth, Scale(21, dpi)), right);

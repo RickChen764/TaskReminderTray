@@ -22,7 +22,7 @@ internal sealed class ScheduleDetailsForm : Form
 {
     private const int DwmWindowCornerPreference = 33;
     private const int DwmWindowCornerRound = 2;
-    private const int TabHeaderHeight = 58;
+    private const int TabHeaderHeight = 50;
     private readonly DetailsSurface _surface = new();
     private readonly DailySummaryPage _dailySummaryPage = new();
     private readonly NotificationCenterPage _notificationCenterPage = new();
@@ -97,8 +97,8 @@ internal sealed class ScheduleDetailsForm : Form
         {
             Dock = DockStyle.Top,
             Height = TabHeaderHeight,
-            BackColor = Color.FromArgb(20, 23, 29),
-            Padding = new Padding(16, 10, 16, 9)
+            BackColor = Color.FromArgb(24, 27, 33),
+            Padding = new Padding(20, 0, 20, 0)
         };
         header.Paint += (_, e) =>
         {
@@ -108,15 +108,15 @@ internal sealed class ScheduleDetailsForm : Form
         };
 
         _tabStrip.Dock = DockStyle.Left;
-        _tabStrip.Width = 438;
+        _tabStrip.Width = 326;
         _tabStrip.ColumnCount = 3;
         _tabStrip.RowCount = 1;
         _tabStrip.Margin = Padding.Empty;
         _tabStrip.Padding = Padding.Empty;
         _tabStrip.BackColor = Color.Transparent;
-        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
-        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
-        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        _tabStrip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
 
         AddTabButton(DetailsTab.Schedule, "开发安排", 0);
         AddTabButton(DetailsTab.DailySummary, "今日摘要", 1);
@@ -140,7 +140,7 @@ internal sealed class ScheduleDetailsForm : Form
         {
             Text = text,
             Dock = DockStyle.Fill,
-            Margin = new Padding(column == 0 ? 0 : 4, 0, column == 2 ? 0 : 4, 0),
+            Margin = Padding.Empty,
             TabStop = true
         };
         button.Click += (_, _) => SelectTab(tab);
@@ -342,11 +342,11 @@ internal sealed class ScheduleDetailsForm : Form
         {
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
-            BackColor = Color.Transparent;
-            ForeColor = Color.FromArgb(174, 185, 201);
+            BackColor = Color.FromArgb(24, 27, 33);
+            ForeColor = Color.FromArgb(151, 164, 184);
             Cursor = Cursors.Hand;
             UseVisualStyleBackColor = false;
-            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular);
             SetStyle(ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.OptimizedDoubleBuffer |
                      ControlStyles.UserPaint, true);
@@ -355,36 +355,72 @@ internal sealed class ScheduleDetailsForm : Form
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
-            var fill = Selected
-                ? Color.FromArgb(39, 48, 62)
-                : ClientRectangle.Contains(PointToClient(Cursor.Position))
-                    ? Color.FromArgb(31, 36, 44)
-                    : Color.FromArgb(24, 28, 35);
-            using var path = RoundedPath(bounds, 7);
-            using var brush = new SolidBrush(fill);
-            e.Graphics.FillPath(brush, path);
-            using var pen = new Pen(Selected
-                ? Color.FromArgb(72, 91, 121)
-                : Color.FromArgb(49, 56, 68));
-            e.Graphics.DrawPath(pen, path);
+            e.Graphics.Clear(BackColor);
+            var hovered = ClientRectangle.Contains(PointToClient(Cursor.Position));
+            if (hovered)
+            {
+                var horizontalInset = Scale(5);
+                var verticalInset = Scale(7);
+                var hoverBounds = new Rectangle(horizontalInset, verticalInset,
+                    Math.Max(1, Width - horizontalInset * 2),
+                    Math.Max(1, Height - verticalInset * 2));
+                using var hoverPath = RoundedPath(hoverBounds, Scale(6));
+                using var hoverBrush = new SolidBrush(Color.FromArgb(30, 35, 43));
+                e.Graphics.FillPath(hoverBrush, hoverPath);
+            }
 
-            var label = BadgeCount > 0 ? $"{Text}  {Math.Min(99, BadgeCount)}" : Text;
-            TextRenderer.DrawText(e.Graphics, label, Font, bounds,
+            using var selectedFont = new Font(Font, FontStyle.Bold);
+            var textFont = Selected ? selectedFont : Font;
+            var badgeText = BadgeCount > 99 ? "99+" : BadgeCount.ToString();
+            var textSize = TextRenderer.MeasureText(e.Graphics, Text, textFont,
+                Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            var badgeWidth = BadgeCount > 0 ? Scale(BadgeCount > 99 ? 28 : 22) : 0;
+            var badgeGap = Scale(7);
+            var groupWidth = textSize.Width + (badgeWidth > 0 ? badgeWidth + badgeGap : 0);
+            var textLeft = Math.Max(0, (Width - groupWidth) / 2);
+            var textBounds = new Rectangle(textLeft, 0, textSize.Width,
+                Height - 1);
+            TextRenderer.DrawText(e.Graphics, Text, textFont, textBounds,
                 Selected ? Color.FromArgb(244, 246, 250) : ForeColor,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+            if (BadgeCount > 0)
+            {
+                var badgeHeight = Scale(18);
+                var badgeBounds = new Rectangle(textBounds.Right + badgeGap,
+                    (Height - badgeHeight) / 2, badgeWidth, badgeHeight);
+                using var badgePath = RoundedPath(badgeBounds, badgeHeight / 2);
+                using var badgeBrush = new SolidBrush(Color.FromArgb(62, 48, 30));
+                e.Graphics.FillPath(badgeBrush, badgePath);
+                using var badgeFont = new Font("Microsoft YaHei UI", 8F,
+                    FontStyle.Bold);
+                TextRenderer.DrawText(e.Graphics, badgeText, badgeFont, badgeBounds,
+                    Color.FromArgb(244, 171, 68),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            }
+
             if (Selected)
             {
                 using var accent = new SolidBrush(Color.FromArgb(88, 142, 238));
-                e.Graphics.FillRectangle(accent, 14, Height - 3,
-                    Math.Max(1, Width - 28), 2);
+                var underlineWidth = Math.Max(Scale(28), textSize.Width);
+                var underlineLeft = textLeft + (textSize.Width - underlineWidth) / 2;
+                e.Graphics.FillRectangle(accent, underlineLeft, Height - Scale(3),
+                    underlineWidth, Scale(2));
             }
-            if (BadgeCount > 0)
-            {
-                using var dot = new SolidBrush(Color.FromArgb(244, 171, 68));
-                e.Graphics.FillEllipse(dot, Width - 14, 7, 6, 6);
-            }
+        }
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            Invalidate();
+            base.OnLostFocus(e);
         }
 
         protected override void OnMouseEnter(EventArgs e)
@@ -411,6 +447,9 @@ internal sealed class ScheduleDetailsForm : Form
             path.CloseFigure();
             return path;
         }
+
+        private int Scale(int logical) =>
+            (int)Math.Round(logical * DeviceDpi / 96F);
     }
 
     private sealed class DetailsSurface : Control
